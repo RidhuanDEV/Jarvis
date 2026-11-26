@@ -88,6 +88,12 @@ pub fn run() {
             commands::list_profiles,
             commands::activate_profile,
             commands::rollback_profile,
+            commands::list_knowledge_roots,
+            commands::query_knowledge,
+            commands::list_tasks,
+            commands::get_expense_summary,
+            commands::list_workflows,
+            commands::list_extensions,
             commands::emergency_stop_managed_workers,
         ])
         .on_window_event(move |_window, event| {

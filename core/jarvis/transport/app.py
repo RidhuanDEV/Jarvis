@@ -28,12 +28,27 @@ from jarvis.application.config_service import (
     build_default_config,
     build_default_storage_roots,
 )
+from jarvis.application.ecosystem_service import (
+    EcosystemGovernanceService,
+    EcosystemServiceError,
+    ExtensionManifest,
+    PrivateLanProviderRegistration,
+)
+from jarvis.application.knowledge_service import KnowledgeRagService, KnowledgeServiceError
 from jarvis.application.license_service import LicenseInventoryService
 from jarvis.application.memory_service import MemoryServiceError, MemoryVaultService
+from jarvis.application.personal_life_service import PersonalLifeError, PersonalLifeService
 from jarvis.application.reminder_service import ReminderSchedulerService, ReminderServiceError
+from jarvis.application.screen_service import ScreenAwarenessError, ScreenAwarenessService
 from jarvis.application.storage_service import StorageService, StorageServiceError
 from jarvis.application.turn_orchestrator import TurnOrchestratorService
 from jarvis.application.voice_service import VoicePipelineService, VoiceServiceError
+from jarvis.application.web_search_service import WebIntelligenceService, WebSearchError
+from jarvis.application.workflow_service import (
+    WorkflowEngineService,
+    WorkflowServiceError,
+    WorkflowTrigger,
+)
 from jarvis.domain.ai_models import ModelManifestRecord, ModelProviderRecord
 from jarvis.domain.licensing import LicenseValidationError
 from jarvis.domain.models import (
@@ -49,6 +64,7 @@ from jarvis.domain.models import (
     SessionContext,
     StorageCategory,
     ToolSpec,
+    ToolStepProposal,
 )
 from jarvis.domain.policy import PolicyEngine
 from jarvis.domain.ports import (
@@ -66,6 +82,7 @@ from jarvis.domain.recommendations import recommend_configuration
 from jarvis.infrastructure.dual_db import DualSqliteManager
 from jarvis.infrastructure.event_bus import SequencedEventBus
 from jarvis.infrastructure.logging_setup import configure_logging, get_logger
+from jarvis.infrastructure.web_fetch import SafeWebFetchClient
 from jarvis.platform.portable_mock import FakeNotificationAdapter, SystemClock, TokenIpcTransport
 from jarvis.platform.windows.audio import (
     WindowsAudioDeviceAdapter,
@@ -205,6 +222,12 @@ class CoreContainer:
     memory_service: MemoryVaultService
     reminder_service: ReminderSchedulerService
     turn_orchestrator: TurnOrchestratorService
+    knowledge_service: KnowledgeRagService
+    web_service: WebIntelligenceService
+    screen_service: ScreenAwarenessService
+    life_service: PersonalLifeService
+    workflow_service: WorkflowEngineService
+    ecosystem_service: EcosystemGovernanceService
 
 
 class _StrictRequest(BaseModel):
@@ -317,6 +340,93 @@ class DismissReminderBody(_StrictRequest):
     expected_revision: int = Field(ge=1)
 
 
+class AddSourceRootBody(_StrictRequest):
+    path: str = Field(min_length=1, max_length=1024)
+    scope: dict[str, Any] | None = None
+
+
+class KnowledgeQueryBody(_StrictRequest):
+    query: str = Field(min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class WebQueryBody(_StrictRequest):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=5, ge=1, le=10)
+    private_query_approved: bool = False
+
+
+class WebFetchBody(_StrictRequest):
+    url: str = Field(min_length=8, max_length=2048)
+    require_https: bool = False
+
+
+class ScreenAnalyzeBody(_StrictRequest):
+    window_selector: str = Field(min_length=1, max_length=256)
+    explicit_user_request: bool = False
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+    actor_ref: str = Field(default="local_owner", min_length=1, max_length=64)
+    is_os_locked: bool = False
+
+
+class CreateTaskBody(_StrictRequest):
+    title: str = Field(min_length=1, max_length=300)
+    due_at_utc: datetime | None = None
+
+
+class UpdateTaskStatusBody(_StrictRequest):
+    expected_revision: int = Field(ge=1)
+    status: str = Field(pattern=r"^(open|in_progress|completed|canceled)$")
+
+
+class CreateCalendarEventBody(_StrictRequest):
+    title: str = Field(min_length=1, max_length=300)
+    start_at_utc: datetime
+    end_at_utc: datetime
+    timezone_iana: str = Field(min_length=2, max_length=64)
+
+
+class RecordExpenseBody(_StrictRequest):
+    amount_minor: int = Field(gt=0)
+    currency_iso: str = Field(min_length=3, max_length=3)
+    kind: str = Field(default="expense", pattern=r"^(expense|refund)$")
+    category: str = Field(min_length=1, max_length=64)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class LogHabitBody(_StrictRequest):
+    habit_key: str = Field(min_length=1, max_length=64)
+    local_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    timezone_iana: str = Field(min_length=2, max_length=64)
+    value: float
+    unit: str = Field(min_length=1, max_length=32)
+
+
+class CreateWorkflowBody(_StrictRequest):
+    name: str = Field(min_length=1, max_length=128)
+    trigger: WorkflowTrigger = Field(default_factory=lambda: WorkflowTrigger(kind="manual"))
+    steps: tuple[ToolStepProposal, ...] = Field(min_length=1, max_length=5)
+    total_timeout_seconds: int = Field(default=60, ge=1, le=120)
+    enabled: bool = True
+
+
+class ExecuteWorkflowBody(_StrictRequest):
+    approved_bound_hash: str | None = None
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+    actor_ref: str = Field(default="local_owner", min_length=1, max_length=64)
+    cancel_after_step: int | None = None
+    simulate_unknown_at_step: int | None = None
+
+
+class InstallExtensionBody(_StrictRequest):
+    manifest: ExtensionManifest
+    expected_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+
+
+class ToggleExtensionBody(_StrictRequest):
+    enabled: bool
+
+
 def _error_status_for_code(code: ErrorCode) -> int:
     mapping = {
         ErrorCode.INVALID_ARGS: status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -424,6 +534,14 @@ def build_default_container(
         clock=resolved_clock,
         event_bus=event_bus,
     )
+    knowledge_service = KnowledgeRagService(db, resolved_fs, resolved_clock, event_bus)
+    web_service = WebIntelligenceService(
+        db, config_service, SafeWebFetchClient(resolved_clock), resolved_clock
+    )
+    screen_service = ScreenAwarenessService(db, resolved_clock)
+    life_service = PersonalLifeService(db, resolved_clock)
+    workflow_service = WorkflowEngineService(db, policy_engine, resolved_clock)
+    ecosystem_service = EcosystemGovernanceService(db, resolved_vault, resolved_clock)
 
     ipc_transport = TokenIpcTransport(
         transport_kind="win_named_pipe_or_loopback" if sys.platform == "win32" else "loopback",
@@ -455,6 +573,12 @@ def build_default_container(
         memory_service=memory_service,
         reminder_service=reminder_service,
         turn_orchestrator=turn_orchestrator,
+        knowledge_service=knowledge_service,
+        web_service=web_service,
+        screen_service=screen_service,
+        life_service=life_service,
+        workflow_service=workflow_service,
+        ecosystem_service=ecosystem_service,
     )
 
 
@@ -1307,6 +1431,396 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             )
             return JSONResponse({"schema_version": 1, "reminder": rec.model_dump(mode="json")})
         except ReminderServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 4 (R2): Knowledge Base & Hybrid RAG ---
+
+    @app.get("/v1/roots")
+    async def list_knowledge_roots() -> dict[str, Any]:
+        roots = active_container.knowledge_service.list_source_roots()
+        return {"schema_version": 1, "roots": [r.model_dump(mode="json") for r in roots]}
+
+    @app.post("/v1/roots")
+    async def add_knowledge_root(body: AddSourceRootBody, request: Request) -> Response:
+        try:
+            rec = active_container.knowledge_service.add_source_root(
+                body.path, scope=body.scope, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "root": rec.model_dump(mode="json")},
+            )
+        except KnowledgeServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/roots/{root_id}")
+    async def revoke_knowledge_root(root_id: str, request: Request) -> Response:
+        try:
+            purged = active_container.knowledge_service.revoke_source_root(
+                root_id, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, "revoked": True, "purged_documents": purged})
+        except KnowledgeServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/roots/{root_id}/sync")
+    async def sync_knowledge_root(root_id: str, request: Request) -> Response:
+        try:
+            summary = active_container.knowledge_service.sync_source_root(
+                root_id, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "root_id": summary.root_id,
+                    "indexed_files": summary.indexed_files,
+                    "skipped_unchanged": summary.skipped_unchanged,
+                    "ocr_required_files": summary.ocr_required_files,
+                    "unsupported_files": summary.unsupported_files,
+                    "failed_files": summary.failed_files,
+                    "removed_stale_files": summary.removed_stale_files,
+                }
+            )
+        except KnowledgeServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/knowledge/query")
+    async def query_knowledge(body: KnowledgeQueryBody) -> dict[str, Any]:
+        res = await active_container.knowledge_service.answer_from_knowledge(
+            body.query, top_k=body.top_k
+        )
+        return {"schema_version": 1, **res.model_dump(mode="json")}
+
+    # --- Phase 4 (R2): Pluggable Web Search & Anti-SSRF Fetch ---
+
+    @app.post("/v1/web/query")
+    async def web_query(body: WebQueryBody, request: Request) -> Response:
+        try:
+            res = await active_container.web_service.query_web(
+                body.query,
+                limit=body.limit,
+                private_query_approved=body.private_query_approved,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, **res})
+        except WebSearchError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/web/fetch")
+    async def web_fetch(body: WebFetchBody, request: Request) -> Response:
+        try:
+            page = await active_container.web_service.fetch_page(
+                body.url, require_https=body.require_https, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "url": page.url,
+                    "status_code": page.status_code,
+                    "text_excerpt": page.text_excerpt,
+                    "fetched_at": page.fetched_at.isoformat(),
+                    "is_stale": page.is_stale,
+                    "from_cache": page.from_cache,
+                }
+            )
+        except WebSearchError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 4 (R2): Screen Awareness ---
+
+    @app.post("/v1/screen/analyze")
+    async def analyze_screen(body: ScreenAnalyzeBody, request: Request) -> Response:
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref=body.actor_ref,
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=body.is_os_locked,
+        )
+        try:
+            res = active_container.screen_service.analyze_window(
+                body.window_selector,
+                session=session,
+                explicit_user_request=body.explicit_user_request,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, **res.model_dump(mode="json")})
+        except ScreenAwarenessError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 4 (R2): Personal Life Management ---
+
+    @app.get("/v1/tasks")
+    async def list_tasks() -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "tasks": [t.model_dump(mode="json") for t in active_container.life_service.list_tasks()],
+        }
+
+    @app.post("/v1/tasks")
+    async def create_task(body: CreateTaskBody, request: Request) -> Response:
+        try:
+            rec = active_container.life_service.create_task(
+                title=body.title, due_at_utc=body.due_at_utc, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "task": rec.model_dump(mode="json")},
+            )
+        except PersonalLifeError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.patch("/v1/tasks/{task_id}")
+    async def update_task_status(
+        task_id: str, body: UpdateTaskStatusBody, request: Request
+    ) -> Response:
+        try:
+            rec = active_container.life_service.update_task_status(
+                task_id,
+                expected_revision=body.expected_revision,
+                status=body.status,  # type: ignore[arg-type]
+            )
+            return JSONResponse({"schema_version": 1, "task": rec.model_dump(mode="json")})
+        except PersonalLifeError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/calendar")
+    async def list_calendar_events() -> dict[str, Any]:
+        events = active_container.life_service.list_calendar_events()
+        return {"schema_version": 1, "events": [e.model_dump(mode="json") for e in events]}
+
+    @app.post("/v1/calendar")
+    async def create_calendar_event(body: CreateCalendarEventBody, request: Request) -> Response:
+        try:
+            ev = active_container.life_service.create_calendar_event(
+                title=body.title,
+                start_at_utc=body.start_at_utc,
+                end_at_utc=body.end_at_utc,
+                timezone_iana=body.timezone_iana,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "event": ev.model_dump(mode="json")},
+            )
+        except PersonalLifeError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/expenses")
+    async def record_expense(body: RecordExpenseBody, request: Request) -> Response:
+        try:
+            rec = active_container.life_service.record_expense(
+                amount_minor=body.amount_minor,
+                currency_iso=body.currency_iso,
+                kind=body.kind,  # type: ignore[arg-type]
+                category=body.category,
+                notes=body.notes,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "expense": rec.model_dump(mode="json")},
+            )
+        except PersonalLifeError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/expenses/summary")
+    async def summarize_expenses() -> dict[str, Any]:
+        sums = active_container.life_service.summarize_expenses_by_currency()
+        return {"schema_version": 1, "currencies": [s.model_dump(mode="json") for s in sums]}
+
+    @app.post("/v1/habits")
+    async def log_habit(body: LogHabitBody, request: Request) -> Response:
+        try:
+            rec = active_container.life_service.log_habit(
+                habit_key=body.habit_key,
+                local_date=body.local_date,
+                timezone_iana=body.timezone_iana,
+                value=body.value,
+                unit=body.unit,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "habit_log": rec.model_dump(mode="json")},
+            )
+        except PersonalLifeError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/habits/{habit_key}/summary")
+    async def habit_summary(habit_key: str) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            **active_container.life_service.descriptive_habit_summary(habit_key).model_dump(mode="json"),
+        }
+
+    # --- Phase 4 (R2): Declarative Typed Workflows ---
+
+    @app.get("/v1/workflows")
+    async def list_workflows() -> dict[str, Any]:
+        wfs = active_container.workflow_service.list_workflows()
+        return {"schema_version": 1, "workflows": [w.model_dump(mode="json") for w in wfs]}
+
+    @app.post("/v1/workflows")
+    async def create_workflow(body: CreateWorkflowBody, request: Request) -> Response:
+        try:
+            wf = active_container.workflow_service.create_workflow(
+                name=body.name,
+                trigger=body.trigger,
+                steps=body.steps,
+                total_timeout_seconds=body.total_timeout_seconds,
+                enabled=body.enabled,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "workflow": wf.model_dump(mode="json")},
+            )
+        except WorkflowServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/workflows/{workflow_id}/dry-run")
+    async def dry_run_workflow(workflow_id: str, request: Request) -> Response:
+        try:
+            prev = active_container.workflow_service.dry_run_preview(workflow_id)
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "workflow_id": prev.workflow_id,
+                    "revision": prev.revision,
+                    "bound_hash": prev.bound_hash,
+                    "requires_r2_approval": prev.requires_r2_approval,
+                    "steps": [
+                        {
+                            "index": s.index,
+                            "tool_id": s.tool_id,
+                            "version": s.version,
+                            "risk": s.risk.value,
+                            "idempotent": s.idempotent,
+                            "requires_r2_approval": s.requires_r2_approval,
+                            "summary": s.summary,
+                        }
+                        for s in prev.steps
+                    ],
+                }
+            )
+        except WorkflowServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/workflows/{workflow_id}/execute")
+    async def execute_workflow(
+        workflow_id: str, body: ExecuteWorkflowBody, request: Request
+    ) -> Response:
+        cfg = active_container.config_service.get_active().document
+        with active_container.db.core_read() as conn:
+            rows = conn.execute(
+                "SELECT id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision FROM grant"
+            ).fetchall()
+        grants = tuple(
+            GrantRecord(
+                id=str(r["id"]),
+                subject_type=str(r["subject_type"]),  # type: ignore[arg-type]
+                subject_id=str(r["subject_id"]),
+                capability=str(r["capability"]),
+                scope=json.loads(str(r["scope_json"])),
+                expires_at=datetime.fromisoformat(str(r["expires_at"])) if r["expires_at"] else None,
+                revoked_at=datetime.fromisoformat(str(r["revoked_at"])) if r["revoked_at"] else None,
+                revision=int(r["revision"]),
+            )
+            for r in rows
+        )
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref=body.actor_ref,
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            res = active_container.workflow_service.execute_workflow(
+                workflow_id,
+                session=session,
+                grants=grants,
+                approved_bound_hash=body.approved_bound_hash,
+                cancel_after_step=body.cancel_after_step,
+                simulate_unknown_at_step=body.simulate_unknown_at_step,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "run_id": res.run_id,
+                    "workflow_id": res.workflow_id,
+                    "state": res.state.value,
+                    "needs_user_reconciliation": res.needs_user_reconciliation,
+                    "steps": [
+                        {
+                            "index": s.index,
+                            "tool_id": s.tool_id,
+                            "state": s.state.value,
+                            "idempotency_key": s.idempotency_key,
+                            "note": s.note,
+                        }
+                        for s in res.steps
+                    ],
+                }
+            )
+        except WorkflowServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 4 (R2): Private LAN Opt-In & Trusted Extension SDK ---
+
+    @app.post("/v1/providers/lan/register")
+    async def register_lan_provider(
+        body: PrivateLanProviderRegistration, request: Request
+    ) -> Response:
+        try:
+            res = active_container.ecosystem_service.register_private_lan_provider(
+                body, correlation_id=_corr(request)
+            )
+            return JSONResponse(status_code=status.HTTP_201_CREATED, content={"schema_version": 1, **res})
+        except EcosystemServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/providers/lan/{provider_id}")
+    async def revoke_lan_provider(provider_id: str, request: Request) -> Response:
+        ok = active_container.ecosystem_service.revoke_private_lan_provider(
+            provider_id, correlation_id=_corr(request)
+        )
+        if not ok:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message=f"Private LAN provider '{provider_id}' not found.",
+                correlation_id=_corr(request),
+            )
+        return JSONResponse({"schema_version": 1, "revoked": True})
+
+    @app.get("/v1/extensions")
+    async def list_extensions() -> dict[str, Any]:
+        exts = active_container.ecosystem_service.list_extensions()
+        return {"schema_version": 1, "extensions": [e.model_dump(mode="json") for e in exts]}
+
+    @app.post("/v1/extensions/install")
+    async def install_extension(body: InstallExtensionBody, request: Request) -> Response:
+        try:
+            rec = active_container.ecosystem_service.install_extension(
+                body.manifest, expected_sha256=body.expected_sha256, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "extension": rec.model_dump(mode="json")},
+            )
+        except EcosystemServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.put("/v1/extensions/{extension_id}/toggle")
+    async def toggle_extension(
+        extension_id: str, body: ToggleExtensionBody, request: Request
+    ) -> Response:
+        try:
+            rec = active_container.ecosystem_service.set_extension_enabled(
+                extension_id, enabled=body.enabled, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, "extension": rec.model_dump(mode="json")})
+        except EcosystemServiceError as exc:
             return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
     @app.get("/v1/licenses/inventory")

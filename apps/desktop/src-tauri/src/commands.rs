@@ -263,6 +263,42 @@ pub async fn rollback_profile(state: State<'_, BrokerState>) -> Result<Value, St
 }
 
 #[tauri::command]
+pub async fn list_knowledge_roots(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/roots").await
+}
+
+#[tauri::command]
+pub async fn query_knowledge(state: State<'_, BrokerState>, query: String) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/knowledge/query",
+        &serde_json::json!({ "query": query }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_tasks(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/tasks").await
+}
+
+#[tauri::command]
+pub async fn get_expense_summary(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/expenses/summary").await
+}
+
+#[tauri::command]
+pub async fn list_workflows(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/workflows").await
+}
+
+#[tauri::command]
+pub async fn list_extensions(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/extensions").await
+}
+
+#[tauri::command]
 pub fn emergency_stop_managed_workers(state: State<'_, BrokerState>) -> usize {
     state.supervisor.close_all_managed()
 }

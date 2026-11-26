@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import type {
   ApprovalChallenge,
+  CurrencyExpenseSummary,
   FpsTarget,
   HardwareCapabilitiesResponse,
+  KnowledgeRootItem,
   LicenseArtifact,
   MachineState,
   MemoryItem,
@@ -10,7 +12,9 @@ import type {
   RuntimeOwnershipMode,
   SequencedDomainEvent,
   StorageLocation,
+  TaskItem,
   VisualQualityTier,
+  WorkflowItem,
 } from '../lib/contracts'
 import { ApprovalChallengeSchema, MachineStateSchema } from '../lib/contracts'
 import type { FrameTelemetrySnapshot } from '../lib/visualEngine'
@@ -18,6 +22,9 @@ import type { FrameTelemetrySnapshot } from '../lib/visualEngine'
 export type NavigationTab =
   | 'command'
   | 'onboarding'
+  | 'knowledge'
+  | 'life'
+  | 'workflows'
   | 'memories'
   | 'reminders'
   | 'capabilities'
@@ -51,6 +58,10 @@ export interface JarvisStoreState {
   licenses: ReadonlyArray<LicenseArtifact>
   memories: ReadonlyArray<MemoryItem>
   reminders: ReadonlyArray<ReminderItem>
+  knowledgeRoots: ReadonlyArray<KnowledgeRootItem>
+  tasks: ReadonlyArray<TaskItem>
+  expenseSummaries: ReadonlyArray<CurrencyExpenseSummary>
+  workflows: ReadonlyArray<WorkflowItem>
   onboardingCompleted: boolean
   timezoneIana: string
   lastTurnReply: string
@@ -77,6 +88,16 @@ export interface JarvisStoreState {
   removeMemory: (id: string) => void
   addReminder: (item: ReminderItem) => void
   dismissReminder: (id: string) => void
+  addKnowledgeRoot: (canonicalPath: string) => void
+  revokeKnowledgeRoot: (id: string) => void
+  addTask: (title: string) => void
+  toggleTaskDone: (id: string) => void
+  recordExpense: (input: {
+    readonly amountMinor: number
+    readonly currencyIso: string
+    readonly kind: 'expense' | 'refund'
+  }) => void
+  addWorkflow: (name: string) => void
   completeOnboarding: (timezoneIana: string) => void
   setLastTurnReply: (reply: string, state?: MachineState) => void
   updateFrameTelemetry: (telemetry: FrameTelemetrySnapshot) => void
@@ -114,6 +135,10 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
   licenses: [],
   memories: [],
   reminders: [],
+  knowledgeRoots: [],
+  tasks: [],
+  expenseSummaries: [],
+  workflows: [],
   onboardingCompleted: false,
   timezoneIana: 'UTC',
   lastTurnReply: '',
@@ -314,6 +339,81 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
         r.id === id ? { ...r, state: 'dismissed', revision: r.revision + 1 } : r,
       ),
       statusAnnouncement: 'Pengingat ditandai selesai.',
+    })),
+  addKnowledgeRoot: (canonicalPath) =>
+    set((s) => ({
+      knowledgeRoots: [
+        ...s.knowledgeRoots,
+        { id: `root-${Date.now()}`, canonical_path: canonicalPath, enabled: true, revision: 1 },
+      ],
+      statusAnnouncement: `Folder pengetahuan opt-in ditambahkan: ${canonicalPath}.`,
+    })),
+  revokeKnowledgeRoot: (id) =>
+    set((s) => ({
+      knowledgeRoots: s.knowledgeRoots.map((r) =>
+        r.id === id ? { ...r, enabled: false, revision: r.revision + 1 } : r,
+      ),
+      statusAnnouncement: 'Akses folder pengetahuan dicabut dan indeks terkait dijadwalkan bersih.',
+    })),
+  addTask: (title) =>
+    set((s) => ({
+      tasks: [...s.tasks, { id: `task-${Date.now()}`, title, status: 'open', revision: 1 }],
+      statusAnnouncement: `Tugas '${title}' disimpan lokal.`,
+    })),
+  toggleTaskDone: (id) =>
+    set((s) => ({
+      tasks: s.tasks.map((t) =>
+        t.id === id
+          ? { ...t, status: t.status === 'completed' ? 'open' : 'completed', revision: t.revision + 1 }
+          : t,
+      ),
+    })),
+  recordExpense: ({ amountMinor, currencyIso, kind }) =>
+    set((s) => {
+      const iso = currencyIso.toUpperCase()
+      const existing = s.expenseSummaries.find((e) => e.currency_iso === iso)
+      const expDelta = kind === 'expense' ? amountMinor : 0
+      const refDelta = kind === 'refund' ? amountMinor : 0
+      const updated = existing
+        ? s.expenseSummaries.map((e) =>
+            e.currency_iso === iso
+              ? {
+                  ...e,
+                  total_expense_minor: e.total_expense_minor + expDelta,
+                  total_refund_minor: e.total_refund_minor + refDelta,
+                  net_spend_minor: e.net_spend_minor + expDelta - refDelta,
+                  transaction_count: e.transaction_count + 1,
+                }
+              : e,
+          )
+        : [
+            ...s.expenseSummaries,
+            {
+              currency_iso: iso,
+              total_expense_minor: expDelta,
+              total_refund_minor: refDelta,
+              net_spend_minor: expDelta - refDelta,
+              transaction_count: 1,
+            },
+          ]
+      return {
+        expenseSummaries: updated,
+        statusAnnouncement: `Pengeluaran ${amountMinor} minor ${iso} dicatat terpisah tanpa konversi kurs otomatis.`,
+      }
+    }),
+  addWorkflow: (name) =>
+    set((s) => ({
+      workflows: [
+        ...s.workflows,
+        {
+          id: `wf-${Date.now()}`,
+          name,
+          step_count: 2,
+          revision: 1,
+          bound_hash: `h${Date.now().toString(16).padEnd(63, '0')}`,
+        },
+      ],
+      statusAnnouncement: `Workflow deklaratif '${name}' disimpan (≤ 5 langkah, 0 R3).`,
     })),
   completeOnboarding: (timezoneIana) =>
     set({

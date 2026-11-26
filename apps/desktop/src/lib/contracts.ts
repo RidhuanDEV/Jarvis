@@ -218,3 +218,37 @@ export const TurnResponseSchema = z.object({
   approval: ApprovalChallengeSchema.nullable().optional(),
 })
 export type TurnResponse = z.infer<typeof TurnResponseSchema>
+
+export const KnowledgeRootItemSchema = z.object({
+  id: z.string(),
+  canonical_path: z.string(),
+  enabled: z.boolean(),
+  revision: z.number().int().positive(),
+})
+export type KnowledgeRootItem = z.infer<typeof KnowledgeRootItemSchema>
+
+export const TaskItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(['open', 'in_progress', 'completed', 'canceled']),
+  revision: z.number().int().positive(),
+})
+export type TaskItem = z.infer<typeof TaskItemSchema>
+
+export const CurrencyExpenseSummarySchema = z.object({
+  currency_iso: z.string(),
+  total_expense_minor: z.number().int().nonnegative(),
+  total_refund_minor: z.number().int().nonnegative(),
+  net_spend_minor: z.number().int(),
+  transaction_count: z.number().int().nonnegative(),
+})
+export type CurrencyExpenseSummary = z.infer<typeof CurrencyExpenseSummarySchema>
+
+export const WorkflowItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  step_count: z.number().int().min(1).max(5),
+  revision: z.number().int().positive(),
+  bound_hash: z.string(),
+})
+export type WorkflowItem = z.infer<typeof WorkflowItemSchema>

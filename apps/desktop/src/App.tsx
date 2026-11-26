@@ -2,9 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Activity,
   Bell,
+  BookOpen,
   Brain,
+  CalendarCheck2,
   Compass,
   Cpu,
+  GitBranch,
   HardDrive,
   Layers,
   Mic,
@@ -27,6 +30,11 @@ import { MemoryVaultPanel, RemindersPanel } from './components/IntelligencePanel
 import { OnboardingWizard } from './components/OnboardingWizard'
 import { OrbitalCore } from './components/OrbitalCore'
 import {
+  KnowledgePanel,
+  PersonalLifePanel,
+  WorkflowsPanel,
+} from './components/ProductivityPanels'
+import {
   dispatchApprovalDecision,
   dispatchCommandTurn,
   loadFoundationData,
@@ -37,6 +45,9 @@ import { useJarvisStore, type NavigationTab } from './store/jarvisStore'
 const NAV_ITEMS: ReadonlyArray<{ readonly id: NavigationTab; readonly label: string }> = [
   { id: 'command', label: 'Command Center' },
   { id: 'onboarding', label: 'Onboarding (10 Steps)' },
+  { id: 'knowledge', label: 'Knowledge (Hybrid RAG)' },
+  { id: 'life', label: 'Personal Life' },
+  { id: 'workflows', label: 'Workflows' },
   { id: 'memories', label: 'Memory Vault' },
   { id: 'reminders', label: 'Reminders' },
   { id: 'capabilities', label: 'Hardware Discovery' },
@@ -63,6 +74,10 @@ export function App() {
     licenses,
     memories,
     reminders,
+    knowledgeRoots,
+    tasks,
+    expenseSummaries,
+    workflows,
     timezoneIana,
     lastTurnReply,
     frameTelemetry,
@@ -83,6 +98,12 @@ export function App() {
     removeMemory,
     addReminder,
     dismissReminder,
+    addKnowledgeRoot,
+    revokeKnowledgeRoot,
+    addTask,
+    toggleTaskDone,
+    recordExpense,
+    addWorkflow,
     completeOnboarding,
     setLastTurnReply,
     updateFrameTelemetry,
@@ -271,17 +292,23 @@ export function App() {
                 ? Activity
                 : item.id === 'onboarding'
                   ? Compass
-                  : item.id === 'memories'
-                    ? Brain
-                    : item.id === 'reminders'
-                      ? Bell
-                      : item.id === 'capabilities'
-                        ? Cpu
-                        : item.id === 'storage'
-                          ? HardDrive
-                          : item.id === 'runtime'
-                            ? Layers
-                            : Scale
+                  : item.id === 'knowledge'
+                    ? BookOpen
+                    : item.id === 'life'
+                      ? CalendarCheck2
+                      : item.id === 'workflows'
+                        ? GitBranch
+                        : item.id === 'memories'
+                          ? Brain
+                          : item.id === 'reminders'
+                            ? Bell
+                            : item.id === 'capabilities'
+                              ? Cpu
+                              : item.id === 'storage'
+                                ? HardDrive
+                                : item.id === 'runtime'
+                                  ? Layers
+                                  : Scale
             return (
               <button
                 key={item.id}
@@ -410,6 +437,30 @@ export function App() {
               }}
               onCompleteOnboarding={({ timezoneIana: tz }) => completeOnboarding(tz)}
             />
+          )}
+
+          {activeTab === 'knowledge' && (
+            <KnowledgePanel
+              roots={knowledgeRoots}
+              onAddRoot={addKnowledgeRoot}
+              onRevokeRoot={revokeKnowledgeRoot}
+            />
+          )}
+
+          {activeTab === 'life' && (
+            <PersonalLifePanel
+              tasks={tasks}
+              expenseSummaries={expenseSummaries}
+              onCreateTask={addTask}
+              onToggleTaskDone={toggleTaskDone}
+              onRecordExpense={({ amountMinor, currencyIso, kind }) =>
+                recordExpense({ amountMinor, currencyIso, kind })
+              }
+            />
+          )}
+
+          {activeTab === 'workflows' && (
+            <WorkflowsPanel workflows={workflows} onCreateSampleWorkflow={addWorkflow} />
           )}
 
           {activeTab === 'memories' && (
