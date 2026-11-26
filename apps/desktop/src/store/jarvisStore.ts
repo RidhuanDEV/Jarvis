@@ -5,6 +5,8 @@ import type {
   HardwareCapabilitiesResponse,
   LicenseArtifact,
   MachineState,
+  MemoryItem,
+  ReminderItem,
   RuntimeOwnershipMode,
   SequencedDomainEvent,
   StorageLocation,
@@ -13,7 +15,15 @@ import type {
 import { ApprovalChallengeSchema, MachineStateSchema } from '../lib/contracts'
 import type { FrameTelemetrySnapshot } from '../lib/visualEngine'
 
-export type NavigationTab = 'command' | 'capabilities' | 'storage' | 'runtime' | 'licenses'
+export type NavigationTab =
+  | 'command'
+  | 'onboarding'
+  | 'memories'
+  | 'reminders'
+  | 'capabilities'
+  | 'storage'
+  | 'runtime'
+  | 'licenses'
 
 export interface PrivacyBadges {
   readonly micMode: 'muted' | 'ptt' | 'wake'
@@ -39,6 +49,11 @@ export interface JarvisStoreState {
   capabilities: HardwareCapabilitiesResponse | null
   storageLocations: ReadonlyArray<StorageLocation>
   licenses: ReadonlyArray<LicenseArtifact>
+  memories: ReadonlyArray<MemoryItem>
+  reminders: ReadonlyArray<ReminderItem>
+  onboardingCompleted: boolean
+  timezoneIana: string
+  lastTurnReply: string
   frameTelemetry: FrameTelemetrySnapshot
   eventLog: ReadonlyArray<SequencedDomainEvent>
 
@@ -57,6 +72,13 @@ export interface JarvisStoreState {
   setCapabilities: (data: HardwareCapabilitiesResponse) => void
   setStorageLocations: (locations: ReadonlyArray<StorageLocation>) => void
   setLicenses: (artifacts: ReadonlyArray<LicenseArtifact>) => void
+  addMemory: (item: MemoryItem) => void
+  approveMemoryProposal: (id: string) => void
+  removeMemory: (id: string) => void
+  addReminder: (item: ReminderItem) => void
+  dismissReminder: (id: string) => void
+  completeOnboarding: (timezoneIana: string) => void
+  setLastTurnReply: (reply: string, state?: MachineState) => void
   updateFrameTelemetry: (telemetry: FrameTelemetrySnapshot) => void
 }
 
@@ -90,6 +112,11 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
   capabilities: null,
   storageLocations: [],
   licenses: [],
+  memories: [],
+  reminders: [],
+  onboardingCompleted: false,
+  timezoneIana: 'UTC',
+  lastTurnReply: '',
   frameTelemetry: INITIAL_TELEMETRY,
   eventLog: [],
 
@@ -259,5 +286,47 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
 
   setStorageLocations: (storageLocations) => set({ storageLocations }),
   setLicenses: (licenses) => set({ licenses }),
+  addMemory: (item) =>
+    set((s) => ({
+      memories: [item, ...s.memories],
+      statusAnnouncement: `Memori '${item.kind}' disimpan secara eksplisit.`,
+    })),
+  approveMemoryProposal: (id) =>
+    set((s) => ({
+      memories: s.memories.map((m) =>
+        m.id === id ? { ...m, status: 'active', revision: m.revision + 1 } : m,
+      ),
+      statusAnnouncement: 'Proposal preferensi disetujui menjadi memori aktif.',
+    })),
+  removeMemory: (id) =>
+    set((s) => ({
+      memories: s.memories.filter((m) => m.id !== id),
+      statusAnnouncement: 'Memori dihapus dan dicatat pada deletion_ledger.',
+    })),
+  addReminder: (item) =>
+    set((s) => ({
+      reminders: [...s.reminders, item],
+      statusAnnouncement: `Pengingat '${item.title}' dijadwalkan (${item.timezone_iana}).`,
+    })),
+  dismissReminder: (id) =>
+    set((s) => ({
+      reminders: s.reminders.map((r) =>
+        r.id === id ? { ...r, state: 'dismissed', revision: r.revision + 1 } : r,
+      ),
+      statusAnnouncement: 'Pengingat ditandai selesai.',
+    })),
+  completeOnboarding: (timezoneIana) =>
+    set({
+      onboardingCompleted: true,
+      timezoneIana,
+      activeTab: 'command',
+      statusAnnouncement: `Onboarding 10 langkah selesai (zona waktu ${timezoneIana}).`,
+    }),
+  setLastTurnReply: (reply, state) =>
+    set((s) => ({
+      lastTurnReply: reply,
+      machineState: state ?? s.machineState,
+      statusAnnouncement: reply,
+    })),
   updateFrameTelemetry: (frameTelemetry) => set({ frameTelemetry }),
 }))

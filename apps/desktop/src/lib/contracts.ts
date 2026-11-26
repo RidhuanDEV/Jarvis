@@ -183,3 +183,38 @@ export const SequencedDomainEventSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
 })
 export type SequencedDomainEvent = z.infer<typeof SequencedDomainEventSchema>
+
+export const MemoryItemSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['fact', 'preference', 'instruction', 'note']),
+  content: z.string(),
+  is_encrypted: z.boolean(),
+  sensitivity: z.enum(['normal', 'sensitive']),
+  source_ref: z.string(),
+  status: z.enum(['active', 'proposal', 'superseded']),
+  revision: z.number().int().positive(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type MemoryItem = z.infer<typeof MemoryItemSchema>
+
+export const ReminderItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  due_at_utc: z.string(),
+  timezone_iana: z.string(),
+  state: z.enum(['scheduled', 'snoozed', 'delivered', 'dismissed', 'missed']),
+  revision: z.number().int().positive(),
+})
+export type ReminderItem = z.infer<typeof ReminderItemSchema>
+
+export const TurnResponseSchema = z.object({
+  schema_version: z.literal(1),
+  request_id: z.string(),
+  state: z.string(),
+  route_kind: z.string(),
+  reply: z.string(),
+  llm_called: z.boolean(),
+  approval: ApprovalChallengeSchema.nullable().optional(),
+})
+export type TurnResponse = z.infer<typeof TurnResponseSchema>

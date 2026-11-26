@@ -10,7 +10,13 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from jarvis.domain.models import HardwareSnapshot, RuntimeOwnershipMode, StorageVolumeInfo
+from jarvis.domain.ai_models import SttResult, TtsResult, TtsVoiceInfo
+from jarvis.domain.models import (
+    AudioEndpointInfo,
+    HardwareSnapshot,
+    RuntimeOwnershipMode,
+    StorageVolumeInfo,
+)
 from jarvis.domain.ports import (
     IpcEndpointInfo,
     ManagedProcessHandle,
@@ -201,3 +207,96 @@ class InMemoryProcessSupervisor:
         for pid in managed_pids:
             del self._alive[pid]
         return len(managed_pids)
+
+
+class StaticAudioDeviceAdapter:
+    def __init__(self, endpoints: tuple[AudioEndpointInfo, ...] = ()) -> None:
+        self._endpoints = endpoints
+
+    def set_endpoints(self, endpoints: tuple[AudioEndpointInfo, ...]) -> None:
+        self._endpoints = endpoints
+
+    def list_endpoints(self) -> tuple[AudioEndpointInfo, ...]:
+        return self._endpoints
+
+
+class FakeDesktopAutomationAdapter:
+    def __init__(self, *, allowlist: frozenset[str] = frozenset({"calculator", "notepad", "paint"})) -> None:
+        self._allowlist = allowlist
+        self._volume = 50
+        self.launched_apps: list[str] = []
+
+    def launch_allowlisted_app(self, app_id: str) -> bool:
+        key = app_id.strip().lower()
+        if key not in self._allowlist:
+            raise PermissionError(f"Application '{app_id}' is not allowlisted.")
+        self.launched_apps.append(key)
+        return True
+
+    def get_volume_percent(self) -> int:
+        return self._volume
+
+    def set_volume_percent(self, percent: int) -> int:
+        if percent < 0 or percent > 100:
+            raise ValueError("Volume percent must be 0..100.")
+        self._volume = percent
+        return self._volume
+
+
+class FakeNotificationAdapter:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str, bool]] = []
+
+    def send_local_notification(self, title: str, body: str, *, silent: bool = False) -> bool:
+        self.sent.append((title, body, silent))
+        return True
+
+
+class FakeSttAdapter:
+    def __init__(self, transcript: str = "atur volume ke 35") -> None:
+        self._transcript = transcript
+
+    @property
+    def engine_name(self) -> str:
+        return "fake_faster_whisper_small"
+
+    def transcribe_pcm16(
+        self, pcm16_mono_16khz: bytes, *, language_hint: str | None = None
+    ) -> SttResult:
+        return SttResult(
+            text=self._transcript,
+            language=language_hint or "id-ID",
+            confidence=0.95,
+            elapsed_ms=12.0,
+            engine_name=self.engine_name,
+        )
+
+
+class FakeTtsAdapter:
+    def __init__(self, voices: tuple[TtsVoiceInfo, ...] | None = None) -> None:
+        self._voices = voices or (
+            TtsVoiceInfo(
+                id="id_ID-news_tts-medium",
+                name="Piper Indonesian News Medium",
+                language="id-ID",
+                engine="piper_tts_gpl",
+                installed=True,
+                license_spdx="GPL-3.0-or-later",
+            ),
+        )
+
+    @property
+    def engine_name(self) -> str:
+        return "piper_tts_gpl"
+
+    def list_installed_voices(self) -> tuple[TtsVoiceInfo, ...]:
+        return self._voices
+
+    def synthesize(self, text: str, *, voice_id: str | None = None, rate: float = 1.0) -> TtsResult:
+        return TtsResult(
+            audio_pcm_or_wav=b"RIFF-FAKE-WAV-" + text.encode("utf-8")[:32],
+            sample_rate_hz=22050,
+            elapsed_ms=15.0,
+            engine_name=self.engine_name,
+            voice_id=voice_id or self._voices[0].id,
+        )

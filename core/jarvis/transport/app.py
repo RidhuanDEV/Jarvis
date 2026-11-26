@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from jarvis.application.ai_registry_service import AiRegistryError, AiRegistryService
 from jarvis.application.approval_service import ApprovalError, ApprovalService
 from jarvis.application.backup_service import BackupService, BackupServiceError
 from jarvis.application.config_service import (
@@ -28,9 +29,15 @@ from jarvis.application.config_service import (
     build_default_storage_roots,
 )
 from jarvis.application.license_service import LicenseInventoryService
+from jarvis.application.memory_service import MemoryServiceError, MemoryVaultService
+from jarvis.application.reminder_service import ReminderSchedulerService, ReminderServiceError
 from jarvis.application.storage_service import StorageService, StorageServiceError
+from jarvis.application.turn_orchestrator import TurnOrchestratorService
+from jarvis.application.voice_service import VoicePipelineService, VoiceServiceError
+from jarvis.domain.ai_models import ModelManifestRecord, ModelProviderRecord
 from jarvis.domain.licensing import LicenseValidationError
 from jarvis.domain.models import (
+    ActionOutcomeState,
     ApprovalDecisionRequest,
     ChannelKind,
     ErrorCode,
@@ -45,10 +52,13 @@ from jarvis.domain.models import (
 )
 from jarvis.domain.policy import PolicyEngine
 from jarvis.domain.ports import (
+    AudioDevicePort,
     ClockPort,
+    DesktopAutomationPort,
     FilesystemSafetyPort,
     HardwareDiscoveryPort,
     LocalIpcTransportPort,
+    NotificationPort,
     ProcessSupervisorPort,
     SecretVaultAndCryptoPort,
 )
@@ -56,7 +66,12 @@ from jarvis.domain.recommendations import recommend_configuration
 from jarvis.infrastructure.dual_db import DualSqliteManager
 from jarvis.infrastructure.event_bus import SequencedEventBus
 from jarvis.infrastructure.logging_setup import configure_logging, get_logger
-from jarvis.platform.portable_mock import SystemClock, TokenIpcTransport
+from jarvis.platform.portable_mock import FakeNotificationAdapter, SystemClock, TokenIpcTransport
+from jarvis.platform.windows.audio import (
+    WindowsAudioDeviceAdapter,
+    WindowsOneCoreVoiceProbeAdapter,
+)
+from jarvis.platform.windows.desktop_automation import WindowsDesktopAutomationAdapter
 from jarvis.platform.windows.filesystem import WindowsFilesystemSafetyAdapter
 from jarvis.platform.windows.hardware import WindowsHardwareDiscoveryAdapter
 from jarvis.platform.windows.supervisor import WindowsJobProcessSupervisor
@@ -89,6 +104,36 @@ def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
             timeout_ms=3000,
             idempotent=True,
             verification="readback_volume",
+        ),
+        ToolSpec(
+            tool_id="os.app.launch",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL,),
+            capability="os.app.launch",
+            timeout_ms=5000,
+            idempotent=False,
+            verification="process_started",
+        ),
+        ToolSpec(
+            tool_id="memory.create",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL,),
+            capability="memory.write",
+            timeout_ms=3000,
+            idempotent=False,
+            verification="sqlite_commit",
+        ),
+        ToolSpec(
+            tool_id="reminder.create",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL, ChannelKind.REMOTE),
+            capability="reminder.write",
+            timeout_ms=3000,
+            idempotent=False,
+            verification="sqlite_commit",
         ),
         ToolSpec(
             tool_id="storage.location.migrate",
@@ -145,6 +190,9 @@ class CoreContainer:
     hardware_port: HardwareDiscoveryPort
     supervisor: ProcessSupervisorPort
     vault: SecretVaultAndCryptoPort
+    audio_port: AudioDevicePort
+    desktop_port: DesktopAutomationPort
+    notification_port: NotificationPort
     event_bus: SequencedEventBus
     policy_engine: PolicyEngine
     config_service: ConfigService
@@ -152,6 +200,11 @@ class CoreContainer:
     approval_service: ApprovalService
     backup_service: BackupService
     license_service: LicenseInventoryService
+    ai_registry: AiRegistryService
+    voice_service: VoicePipelineService
+    memory_service: MemoryVaultService
+    reminder_service: ReminderSchedulerService
+    turn_orchestrator: TurnOrchestratorService
 
 
 class _StrictRequest(BaseModel):
@@ -211,6 +264,59 @@ class SessionLockBody(_StrictRequest):
     reason: str = Field(default="os_session_locked", min_length=1, max_length=128)
 
 
+class SubmitTurnBody(_StrictRequest):
+    utterance: str = Field(min_length=1, max_length=2000)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+    actor_ref: str = Field(default="local_owner", min_length=1, max_length=64)
+    channel: ChannelKind = ChannelKind.LOCAL
+    modality: InputModality = InputModality.TRUSTED_UI
+    is_os_locked: bool = False
+    is_suspended: bool = False
+    is_muted: bool = False
+
+
+class SetAudioModeBody(_StrictRequest):
+    mode: str = Field(pattern=r"^(muted|ptt|wake)$")
+
+
+class SelectAudioDevicesBody(_StrictRequest):
+    input_device_id: str | None = None
+    output_device_id: str | None = None
+
+
+class CreateMemoryBody(_StrictRequest):
+    kind: str = Field(default="fact", pattern=r"^(fact|preference|instruction|note)$")
+    content: str = Field(min_length=1, max_length=4000)
+    sensitivity: str = Field(default="normal", pattern=r"^(normal|sensitive)$")
+    source_ref: str = Field(default="local_owner", min_length=1, max_length=128)
+    status: str = Field(default="active", pattern=r"^(active|proposal)$")
+
+
+class UpdateMemoryBody(_StrictRequest):
+    expected_revision: int = Field(ge=1)
+    content: str = Field(min_length=1, max_length=4000)
+    change_reason: str = Field(default="user_edit", min_length=1, max_length=128)
+
+
+class ApproveProposalBody(_StrictRequest):
+    expected_revision: int = Field(ge=1)
+
+
+class CreateReminderBody(_StrictRequest):
+    title: str = Field(min_length=1, max_length=300)
+    due_at_utc: datetime
+    timezone_iana: str | None = Field(default=None, min_length=2, max_length=64)
+
+
+class SnoozeReminderBody(_StrictRequest):
+    expected_revision: int = Field(ge=1)
+    minutes: int = Field(ge=1, le=1440)
+
+
+class DismissReminderBody(_StrictRequest):
+    expected_revision: int = Field(ge=1)
+
+
 def _error_status_for_code(code: ErrorCode) -> int:
     mapping = {
         ErrorCode.INVALID_ARGS: status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -252,6 +358,9 @@ def build_default_container(
     hardware_port: HardwareDiscoveryPort | None = None,
     supervisor: ProcessSupervisorPort | None = None,
     vault: SecretVaultAndCryptoPort | None = None,
+    audio_port: AudioDevicePort | None = None,
+    desktop_port: DesktopAutomationPort | None = None,
+    notification_port: NotificationPort | None = None,
 ) -> CoreContainer:
     data_dir = settings.resolved_data_dir()
     cache_dir = settings.resolved_cache_dir()
@@ -262,6 +371,9 @@ def build_default_container(
     resolved_hw = hardware_port or WindowsHardwareDiscoveryAdapter()
     resolved_sup = supervisor or WindowsJobProcessSupervisor()
     resolved_vault = vault or WindowsVaultAndCryptoAdapter()
+    resolved_audio = audio_port or WindowsAudioDeviceAdapter()
+    resolved_desktop = desktop_port or WindowsDesktopAutomationAdapter(allow_live_launch=False)
+    resolved_notify = notification_port or FakeNotificationAdapter()
 
     db = DualSqliteManager(
         core_db_path=Path(roots.core_db) / "jarvis_core.db",
@@ -278,10 +390,40 @@ def build_default_container(
     storage_service = StorageService(db, config_service, resolved_fs, resolved_clock)
     storage_service.sync_locations_from_config()
 
+    policy_engine = PolicyEngine(default_tool_registry())
     approval_service = ApprovalService(db, resolved_clock, event_bus)
     backup_service = BackupService(db, resolved_clock)
     license_service = LicenseInventoryService(db, resolved_clock)
     license_service.seed_baseline_if_empty()
+
+    ai_registry = AiRegistryService(db, resolved_clock, event_bus)
+    ai_registry.seed_default_profiles()
+
+    voice_service = VoicePipelineService(
+        db,
+        config_service,
+        resolved_audio,
+        resolved_clock,
+        event_bus,
+        tts_providers=(WindowsOneCoreVoiceProbeAdapter(),),
+    )
+    memory_service = MemoryVaultService(db, resolved_vault, resolved_clock)
+    reminder_service = ReminderSchedulerService(
+        db, config_service, resolved_notify, resolved_clock, event_bus
+    )
+    turn_orchestrator = TurnOrchestratorService(
+        db=db,
+        config_service=config_service,
+        policy_engine=policy_engine,
+        approval_service=approval_service,
+        ai_registry=ai_registry,
+        memory_service=memory_service,
+        reminder_service=reminder_service,
+        desktop_port=resolved_desktop,
+        fs_port=resolved_fs,
+        clock=resolved_clock,
+        event_bus=event_bus,
+    )
 
     ipc_transport = TokenIpcTransport(
         transport_kind="win_named_pipe_or_loopback" if sys.platform == "win32" else "loopback",
@@ -298,13 +440,21 @@ def build_default_container(
         hardware_port=resolved_hw,
         supervisor=resolved_sup,
         vault=resolved_vault,
+        audio_port=resolved_audio,
+        desktop_port=resolved_desktop,
+        notification_port=resolved_notify,
         event_bus=event_bus,
-        policy_engine=PolicyEngine(default_tool_registry()),
+        policy_engine=policy_engine,
         config_service=config_service,
         storage_service=storage_service,
         approval_service=approval_service,
         backup_service=backup_service,
         license_service=license_service,
+        ai_registry=ai_registry,
+        voice_service=voice_service,
+        memory_service=memory_service,
+        reminder_service=reminder_service,
+        turn_orchestrator=turn_orchestrator,
     )
 
 
@@ -813,10 +963,351 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/session/lock")
     async def lock_session(body: SessionLockBody, request: Request) -> dict[str, Any]:
+        active_container.voice_service.on_session_locked()
         canceled = active_container.approval_service.cancel_all_pending_on_lock(
             reason=body.reason, correlation_id=_corr(request)
         )
         return {"schema_version": 1, "canceled_approvals": canceled}
+
+    # --- Phase 3: Turn Orchestration (Deterministic-First + Bounded LLM) ---
+
+    @app.post("/v1/requests")
+    async def submit_turn(body: SubmitTurnBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref=body.actor_ref,
+            channel=body.channel,
+            modality=body.modality,
+            is_os_locked=body.is_os_locked,
+            is_suspended=body.is_suspended,
+            is_muted=body.is_muted,
+            offline_mode=cfg.ai.offline_mode,
+        )
+        result = await active_container.turn_orchestrator.submit_turn(
+            body.utterance, session=session, correlation_id=_corr(request)
+        )
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "request_id": result.request_id,
+            "state": result.state.value,
+            "route_kind": result.route_kind,
+            "reply": result.reply,
+            "llm_called": result.llm_called,
+            "steps": [
+                {
+                    "tool_id": s.tool_id,
+                    "tool_version": s.tool_version,
+                    "state": s.state.value,
+                    "verified": s.verified,
+                    "summary": s.summary,
+                    "error_code": s.error_code.value if s.error_code else None,
+                    "data": s.data,
+                }
+                for s in result.steps
+            ],
+            "approval": result.approval.model_dump(mode="json") if result.approval else None,
+        }
+        if result.state == ActionOutcomeState.AWAITING_APPROVAL:
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+        if result.state == ActionOutcomeState.FAILED and result.error_code is not None:
+            return _error_response(
+                code=result.error_code, message=result.reply, correlation_id=_corr(request)
+            )
+        return JSONResponse(content=payload)
+
+    # --- Phase 3: Providers, Model Manifests & Atomic AI Profiles ---
+
+    @app.get("/v1/providers")
+    async def list_providers() -> dict[str, Any]:
+        providers = active_container.ai_registry.list_providers()
+        return {
+            "schema_version": 1,
+            "providers": [p.model_dump(mode="json") for p in providers],
+        }
+
+    @app.post("/v1/providers")
+    async def register_provider(provider: ModelProviderRecord, request: Request) -> Response:
+        try:
+            saved, warnings = active_container.ai_registry.register_provider(
+                provider, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={
+                    "schema_version": 1,
+                    "provider": saved.model_dump(mode="json"),
+                    "warnings": warnings,
+                },
+            )
+        except AiRegistryError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/providers/{provider_id}/probe")
+    async def probe_provider(provider_id: str, request: Request) -> Response:
+        try:
+            res = await active_container.ai_registry.probe_provider(
+                provider_id, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, "probe": res.model_dump(mode="json")})
+        except AiRegistryError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, Any]:
+        manifests = active_container.ai_registry.list_manifests()
+        return {"schema_version": 1, "models": [m.model_dump(mode="json") for m in manifests]}
+
+    @app.post("/v1/models")
+    async def register_model(
+        manifest: ModelManifestRecord,
+        request: Request,
+        verify_local_file: bool = Query(default=True),
+    ) -> Response:
+        try:
+            saved = active_container.ai_registry.register_manifest(
+                manifest, verify_local_file=verify_local_file, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "model": saved.model_dump(mode="json")},
+            )
+        except AiRegistryError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/profiles")
+    async def list_profiles() -> dict[str, Any]:
+        active = active_container.ai_registry.get_active_profile()
+        profiles = active_container.ai_registry.list_profiles()
+        return {
+            "schema_version": 1,
+            "active_profile_id": active.profile.id,
+            "previous_healthy_profile_id": active.previous_healthy_profile_id,
+            "profiles": [p.model_dump(mode="json") for p in profiles],
+        }
+
+    @app.post("/v1/profiles/{profile_id}/activate")
+    async def activate_profile(profile_id: str, request: Request) -> Response:
+        try:
+            outcome = active_container.ai_registry.switch_profile_atomic(
+                profile_id, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "committed": outcome.committed,
+                    "rolled_back": outcome.rolled_back,
+                    "active_profile": outcome.active_profile.model_dump(mode="json"),
+                    "reason": outcome.reason,
+                }
+            )
+        except AiRegistryError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/profiles/rollback")
+    async def rollback_profile(request: Request) -> Response:
+        try:
+            state = active_container.ai_registry.rollback_profile(correlation_id=_corr(request))
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "active_profile": state.profile.model_dump(mode="json"),
+                }
+            )
+        except AiRegistryError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 3: Adaptive Audio & Voice ---
+
+    @app.get("/v1/audio/state")
+    async def get_audio_state() -> dict[str, Any]:
+        snap = active_container.voice_service.get_state()
+        return {
+            "schema_version": 1,
+            "mode": snap.mode,
+            "input_device_id": snap.input_device_id,
+            "output_device_id": snap.output_device_id,
+            "echo_guard_enabled": snap.echo_guard_enabled,
+            "is_tts_playing": snap.is_tts_playing,
+            "ring_buffer_seconds": snap.ring_buffer_seconds,
+            "echo_guard": {
+                "allow_mic_wake_or_vad": snap.echo_guard_decision.allow_mic_wake_or_vad,
+                "allow_voice_barge_in": snap.echo_guard_decision.allow_voice_barge_in,
+                "allow_ptt_or_ui_barge_in": snap.echo_guard_decision.allow_ptt_or_ui_barge_in,
+                "reason": snap.echo_guard_decision.reason,
+            },
+            "installed_voices": [v.model_dump(mode="json") for v in snap.installed_voices],
+            "endpoints": [e.model_dump(mode="json") for e in snap.endpoints],
+        }
+
+    @app.put("/v1/audio/mode")
+    async def set_audio_mode(body: SetAudioModeBody, request: Request) -> dict[str, Any]:
+        snap = active_container.voice_service.set_mode(
+            body.mode,  # type: ignore[arg-type]
+            correlation_id=_corr(request),
+        )
+        return {"schema_version": 1, "mode": snap.mode}
+
+    @app.put("/v1/audio/devices")
+    async def select_audio_devices(body: SelectAudioDevicesBody, request: Request) -> Response:
+        try:
+            snap = active_container.voice_service.select_devices(
+                input_device_id=body.input_device_id,
+                output_device_id=body.output_device_id,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "input_device_id": snap.input_device_id,
+                    "output_device_id": snap.output_device_id,
+                }
+            )
+        except VoiceServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/audio/test")
+    async def test_audio(request: Request) -> dict[str, Any]:
+        return {"schema_version": 1, **active_container.voice_service.run_self_test(correlation_id=_corr(request))}
+
+    # --- Phase 3: Explicit Encrypted Memory Vault ---
+
+    @app.get("/v1/memories")
+    async def list_memories(
+        include_proposals: bool = Query(default=False),
+        q: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        items = active_container.memory_service.list_memories(
+            include_proposals=include_proposals, query=q
+        )
+        return {"schema_version": 1, "memories": [m.model_dump(mode="json") for m in items]}
+
+    @app.post("/v1/memories")
+    async def create_memory(body: CreateMemoryBody, request: Request) -> Response:
+        try:
+            rec = active_container.memory_service.create_memory(
+                kind=body.kind,  # type: ignore[arg-type]
+                content=body.content,
+                sensitivity=body.sensitivity,  # type: ignore[arg-type]
+                source_ref=body.source_ref,
+                status=body.status,  # type: ignore[arg-type]
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "memory": rec.model_dump(mode="json")},
+            )
+        except MemoryServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.patch("/v1/memories/{memory_id}")
+    async def update_memory(memory_id: str, body: UpdateMemoryBody, request: Request) -> Response:
+        try:
+            rec = active_container.memory_service.update_memory(
+                memory_id,
+                expected_revision=body.expected_revision,
+                new_content=body.content,
+                change_reason=body.change_reason,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "memory": rec.model_dump(mode="json")})
+        except MemoryServiceError as exc:
+            http_st = (
+                status.HTTP_409_CONFLICT
+                if "Optimistic lock" in str(exc)
+                else _error_status_for_code(exc.code)
+            )
+            return _error_response(
+                code=exc.code, message=str(exc), correlation_id=_corr(request), http_status=http_st
+            )
+
+    @app.post("/v1/memories/{memory_id}/approve")
+    async def approve_memory_proposal(
+        memory_id: str, body: ApproveProposalBody, request: Request
+    ) -> Response:
+        try:
+            rec = active_container.memory_service.approve_proposal(
+                memory_id, expected_revision=body.expected_revision, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, "memory": rec.model_dump(mode="json")})
+        except MemoryServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/memories/{memory_id}")
+    async def delete_memory(memory_id: str, request: Request) -> Response:
+        deleted = active_container.memory_service.delete_memory(
+            memory_id, correlation_id=_corr(request)
+        )
+        if not deleted:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message=f"Memory '{memory_id}' not found.",
+                correlation_id=_corr(request),
+            )
+        return JSONResponse({"schema_version": 1, "deleted": True, "tombstone_recorded": True})
+
+    # --- Phase 3: Persistent IANA/UTC Reminders & Quiet Hours ---
+
+    @app.get("/v1/reminders")
+    async def list_reminders() -> dict[str, Any]:
+        rems = active_container.reminder_service.list_reminders()
+        return {"schema_version": 1, "reminders": [r.model_dump(mode="json") for r in rems]}
+
+    @app.post("/v1/reminders")
+    async def create_reminder(body: CreateReminderBody, request: Request) -> Response:
+        try:
+            rec = active_container.reminder_service.create_reminder(
+                title=body.title,
+                due_at_utc=body.due_at_utc,
+                timezone_iana=body.timezone_iana,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "reminder": rec.model_dump(mode="json")},
+            )
+        except ReminderServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/reminders/process-due")
+    async def process_due_reminders(request: Request) -> dict[str, Any]:
+        outcomes = active_container.reminder_service.process_due_reminders(
+            correlation_id=_corr(request)
+        )
+        return {
+            "schema_version": 1,
+            "processed": [
+                {"reminder_id": o.reminder_id, "title": o.title, "status": o.status}
+                for o in outcomes
+            ],
+        }
+
+    @app.post("/v1/reminders/{reminder_id}/snooze")
+    async def snooze_reminder(
+        reminder_id: str, body: SnoozeReminderBody, request: Request
+    ) -> Response:
+        try:
+            rec = active_container.reminder_service.snooze_reminder(
+                reminder_id,
+                expected_revision=body.expected_revision,
+                minutes=body.minutes,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "reminder": rec.model_dump(mode="json")})
+        except ReminderServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/reminders/{reminder_id}/dismiss")
+    async def dismiss_reminder(
+        reminder_id: str, body: DismissReminderBody, request: Request
+    ) -> Response:
+        try:
+            rec = active_container.reminder_service.dismiss_reminder(
+                reminder_id, expected_revision=body.expected_revision
+            )
+            return JSONResponse({"schema_version": 1, "reminder": rec.model_dump(mode="json")})
+        except ReminderServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
     @app.get("/v1/licenses/inventory")
     async def get_license_inventory() -> dict[str, Any]:

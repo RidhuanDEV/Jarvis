@@ -76,6 +76,18 @@ pub fn run() {
             commands::get_license_inventory,
             commands::submit_approval_decision,
             commands::lock_session,
+            commands::submit_turn,
+            commands::complete_onboarding_step,
+            commands::get_audio_state,
+            commands::set_audio_mode,
+            commands::list_memories,
+            commands::create_memory,
+            commands::delete_memory,
+            commands::list_reminders,
+            commands::create_reminder,
+            commands::list_profiles,
+            commands::activate_profile,
+            commands::rollback_profile,
             commands::emergency_stop_managed_workers,
         ])
         .on_window_event(move |_window, event| {

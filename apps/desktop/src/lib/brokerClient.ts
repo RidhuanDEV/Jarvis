@@ -3,9 +3,11 @@ import {
   HardwareCapabilitiesResponseSchema,
   LicenseInventoryResponseSchema,
   StorageLocationsResponseSchema,
+  TurnResponseSchema,
   type HardwareCapabilitiesResponse,
   type LicenseArtifact,
   type StorageLocation,
+  type TurnResponse,
 } from './contracts'
 
 function isTauriRuntime(): boolean {
@@ -162,4 +164,58 @@ export async function dispatchApprovalDecision(payload: {
     },
   })
   return true
+}
+
+export async function dispatchCommandTurn(
+  utterance: string,
+  sessionId = 'local-session-1',
+): Promise<TurnResponse> {
+  if (isTauriRuntime()) {
+    const raw: unknown = await invoke('submit_turn', { utterance, sessionId })
+    return TurnResponseSchema.parse(raw)
+  }
+
+  // Offline deterministic preview mirror when running outside live Tauri broker
+  const trimmed = utterance.trim()
+  const reqId = `preview_${Date.now()}`
+  if (/^(?:sekarang\s+)?(?:jam\s+berapa|what\s+time\s+is\s+it)\??$/i.test(trimmed)) {
+    return {
+      schema_version: 1,
+      request_id: reqId,
+      state: 'completed',
+      route_kind: 'system.time',
+      reply: `Waktu lokal saat ini: ${new Date().toLocaleTimeString()} (0 panggilan LLM — Direct Mode).`,
+      llm_called: false,
+      approval: null,
+    }
+  }
+  if (/^(?:pindahkan|rename|move)\s+file\s+/i.test(trimmed)) {
+    return {
+      schema_version: 1,
+      request_id: reqId,
+      state: 'awaiting_approval',
+      route_kind: 'fs.file.move',
+      reply: 'Aksi fs.file.move berisiko R2 dan menunggu persetujuan lokal pada dialog native.',
+      llm_called: false,
+      approval: {
+        approval_id: `r2-${reqId}`,
+        action_run_id: `run-${reqId}`,
+        tool_id: 'fs.file.move',
+        tool_version: 1,
+        bound_hash: 'b'.repeat(64),
+        nonce: 'c'.repeat(32),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        summary: `Konfirmasi R2: ${trimmed}`,
+      },
+    }
+  }
+  return {
+    schema_version: 1,
+    request_id: reqId,
+    state: 'completed',
+    route_kind: 'direct_mode_preview',
+    reply: `Direct Mode menerima perintah "${trimmed}" secara lokal offline (0 panggilan cloud).`,
+    llm_called: false,
+    approval: null,
+  }
 }

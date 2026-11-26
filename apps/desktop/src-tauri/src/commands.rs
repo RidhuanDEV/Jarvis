@@ -146,6 +146,123 @@ pub async fn lock_session(state: State<'_, BrokerState>, reason: String) -> Resu
 }
 
 #[tauri::command]
+pub async fn submit_turn(
+    state: State<'_, BrokerState>,
+    utterance: String,
+    session_id: String,
+) -> Result<Value, String> {
+    let body = serde_json::json!({
+        "utterance": utterance,
+        "session_id": session_id,
+        "actor_ref": "local_owner",
+        "channel": "local",
+        "modality": "trusted_ui"
+    });
+    forward_json(&state, reqwest::Method::POST, "/v1/requests", &body).await
+}
+
+#[tauri::command]
+pub async fn complete_onboarding_step(
+    state: State<'_, BrokerState>,
+    step: u8,
+    mark_completed: bool,
+) -> Result<Value, String> {
+    let path = format!("/v1/onboarding/steps/{step}?mark_completed={mark_completed}");
+    forward_json(&state, reqwest::Method::POST, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn get_audio_state(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/audio/state").await
+}
+
+#[tauri::command]
+pub async fn set_audio_mode(state: State<'_, BrokerState>, mode: String) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::PUT,
+        "/v1/audio/mode",
+        &serde_json::json!({ "mode": mode }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_memories(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/memories?include_proposals=true").await
+}
+
+#[tauri::command]
+pub async fn create_memory(
+    state: State<'_, BrokerState>,
+    kind: String,
+    content: String,
+    sensitivity: String,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/memories",
+        &serde_json::json!({ "kind": kind, "content": content, "sensitivity": sensitivity }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_memory(
+    state: State<'_, BrokerState>,
+    memory_id: String,
+) -> Result<Value, String> {
+    let path = format!("/v1/memories/{memory_id}");
+    forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn list_reminders(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/reminders").await
+}
+
+#[tauri::command]
+pub async fn create_reminder(
+    state: State<'_, BrokerState>,
+    title: String,
+    due_at_utc: String,
+    timezone_iana: String,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/reminders",
+        &serde_json::json!({
+            "title": title,
+            "due_at_utc": due_at_utc,
+            "timezone_iana": timezone_iana
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_profiles(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/profiles").await
+}
+
+#[tauri::command]
+pub async fn activate_profile(
+    state: State<'_, BrokerState>,
+    profile_id: String,
+) -> Result<Value, String> {
+    let path = format!("/v1/profiles/{profile_id}/activate");
+    forward_json(&state, reqwest::Method::POST, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn rollback_profile(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_json(&state, reqwest::Method::POST, "/v1/profiles/rollback", &serde_json::json!({}))
+        .await
+}
+
+#[tauri::command]
 pub fn emergency_stop_managed_workers(state: State<'_, BrokerState>) -> usize {
     state.supervisor.close_all_managed()
 }

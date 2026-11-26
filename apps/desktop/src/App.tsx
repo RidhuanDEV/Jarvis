@@ -1,12 +1,16 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Activity,
+  Bell,
+  Brain,
+  Compass,
   Cpu,
   HardDrive,
   Layers,
   Mic,
   MicOff,
   Scale,
+  Send,
   ShieldAlert,
   Square,
   Wifi,
@@ -19,13 +23,22 @@ import {
   RuntimeVisualPanel,
   StorageManagerPanel,
 } from './components/FoundationPanels'
+import { MemoryVaultPanel, RemindersPanel } from './components/IntelligencePanels'
+import { OnboardingWizard } from './components/OnboardingWizard'
 import { OrbitalCore } from './components/OrbitalCore'
-import { dispatchApprovalDecision, loadFoundationData } from './lib/brokerClient'
+import {
+  dispatchApprovalDecision,
+  dispatchCommandTurn,
+  loadFoundationData,
+} from './lib/brokerClient'
 import type { ApprovalChallenge } from './lib/contracts'
 import { useJarvisStore, type NavigationTab } from './store/jarvisStore'
 
 const NAV_ITEMS: ReadonlyArray<{ readonly id: NavigationTab; readonly label: string }> = [
   { id: 'command', label: 'Command Center' },
+  { id: 'onboarding', label: 'Onboarding (10 Steps)' },
+  { id: 'memories', label: 'Memory Vault' },
+  { id: 'reminders', label: 'Reminders' },
   { id: 'capabilities', label: 'Hardware Discovery' },
   { id: 'storage', label: 'Storage (11 Roots)' },
   { id: 'runtime', label: 'Runtime & Visuals' },
@@ -48,6 +61,10 @@ export function App() {
     capabilities,
     storageLocations,
     licenses,
+    memories,
+    reminders,
+    timezoneIana,
+    lastTurnReply,
     frameTelemetry,
     setActiveTab,
     setQualityTier,
@@ -61,8 +78,17 @@ export function App() {
     setCapabilities,
     setStorageLocations,
     setLicenses,
+    addMemory,
+    approveMemoryProposal,
+    removeMemory,
+    addReminder,
+    dismissReminder,
+    completeOnboarding,
+    setLastTurnReply,
     updateFrameTelemetry,
   } = useJarvisStore()
+
+  const [turnInput, setTurnInput] = useState('')
 
   useEffect(() => {
     let active = true
@@ -108,6 +134,19 @@ export function App() {
     [resolvePendingApproval],
   )
 
+  const handleTurnSubmit = (ev: React.FormEvent) => {
+    ev.preventDefault()
+    const trimmed = turnInput.trim()
+    if (!trimmed) return
+    setTurnInput('')
+    void dispatchCommandTurn(trimmed).then((res) => {
+      setLastTurnReply(res.reply, res.approval ? 'Approval' : 'Success')
+      if (res.approval) {
+        openApprovalChallenge(res.approval)
+      }
+    })
+  }
+
   const triggerSampleR2Preview = () => {
     openApprovalChallenge({
       approval_id: 'preview-r2-storage-migrate',
@@ -131,7 +170,7 @@ export function App() {
         {statusAnnouncement}
       </div>
 
-      {/* Explicit privacy & execution boundary header (never rely solely on ring color) */}
+      {/* Explicit privacy & execution boundary header */}
       <header
         className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3"
         style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
@@ -230,13 +269,19 @@ export function App() {
             const Icon =
               item.id === 'command'
                 ? Activity
-                : item.id === 'capabilities'
-                  ? Cpu
-                  : item.id === 'storage'
-                    ? HardDrive
-                    : item.id === 'runtime'
-                      ? Layers
-                      : Scale
+                : item.id === 'onboarding'
+                  ? Compass
+                  : item.id === 'memories'
+                    ? Brain
+                    : item.id === 'reminders'
+                      ? Bell
+                      : item.id === 'capabilities'
+                        ? Cpu
+                        : item.id === 'storage'
+                          ? HardDrive
+                          : item.id === 'runtime'
+                            ? Layers
+                            : Scale
             return (
               <button
                 key={item.id}
@@ -273,10 +318,33 @@ export function App() {
                 style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
               >
                 <div>
-                  <h1 className="text-lg font-semibold">Command Center — Foundation Active</h1>
+                  <h1 className="text-lg font-semibold">Command Center — Deterministic-First OS</h1>
                   <p className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                    {statusAnnouncement}
+                    {lastTurnReply || statusAnnouncement}
                   </p>
+
+                  <form onSubmit={handleTurnSubmit} className="mt-4 flex gap-2">
+                    <input
+                      type="text"
+                      aria-label="Perintah teks lokal"
+                      placeholder="Contoh: jam berapa, atur volume ke 40, pindahkan file a.txt ke b.txt..."
+                      value={turnInput}
+                      onChange={(e) => setTurnInput(e.target.value)}
+                      className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-xs"
+                      style={{
+                        backgroundColor: 'var(--surface-canvas)',
+                        borderColor: 'var(--border-strong)',
+                      }}
+                    />
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors hover:brightness-110 active:scale-[0.99]"
+                      style={{ backgroundColor: 'var(--accent-core)', color: '#080d17' }}
+                    >
+                      <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                      Kirim
+                    </button>
+                  </form>
 
                   <div
                     className="font-mono-tabular mt-4 grid grid-cols-3 gap-3 rounded-lg border p-3 text-xs"
@@ -319,6 +387,69 @@ export function App() {
                 </div>
               </section>
             </div>
+          )}
+
+          {activeTab === 'onboarding' && (
+            <OnboardingWizard
+              capabilities={capabilities}
+              storageLocations={storageLocations}
+              qualityTier={qualityTier}
+              fpsTarget={fpsTarget}
+              runtimeOwnershipMode={runtimeOwnershipMode}
+              onApplyRecommendedSetup={() => {
+                if (capabilities) {
+                  setQualityTier(capabilities.recommendation.recommended_visual_tier)
+                  setFpsTarget(capabilities.recommendation.recommended_fps_target)
+                  setRuntimeOwnershipMode(capabilities.recommendation.recommended_runtime_ownership)
+                }
+              }}
+              onSelectRuntime={setRuntimeOwnershipMode}
+              onSelectVisuals={(tier, fps) => {
+                setQualityTier(tier)
+                setFpsTarget(fps)
+              }}
+              onCompleteOnboarding={({ timezoneIana: tz }) => completeOnboarding(tz)}
+            />
+          )}
+
+          {activeTab === 'memories' && (
+            <MemoryVaultPanel
+              memories={memories}
+              onCreateMemory={({ kind, content, sensitivity }) =>
+                addMemory({
+                  id: `mem-${Date.now()}`,
+                  kind,
+                  content,
+                  is_encrypted: sensitivity === 'sensitive',
+                  sensitivity,
+                  source_ref: 'local_owner',
+                  status: 'active',
+                  revision: 1,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                })
+              }
+              onApproveProposal={(id) => approveMemoryProposal(id)}
+              onDeleteMemory={(id) => removeMemory(id)}
+            />
+          )}
+
+          {activeTab === 'reminders' && (
+            <RemindersPanel
+              reminders={reminders}
+              defaultTimezone={timezoneIana}
+              onCreateReminder={({ title, minutesFromNow, timezoneIana: tz }) =>
+                addReminder({
+                  id: `rem-${Date.now()}`,
+                  title,
+                  due_at_utc: new Date(Date.now() + minutesFromNow * 60_000).toISOString(),
+                  timezone_iana: tz,
+                  state: 'scheduled',
+                  revision: 1,
+                })
+              }
+              onDismissReminder={(id) => dismissReminder(id)}
+            />
           )}
 
           {activeTab === 'capabilities' && (
