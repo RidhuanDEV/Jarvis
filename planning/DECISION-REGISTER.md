@@ -59,10 +59,14 @@ JARVIS is governed as a **private-first, open-source-ready, hardware-adaptive, l
 
 ---
 
-## 4. Remaining Technical Uncertainties Queued for `R0` Empirical Validation
+## 4. Empirical `R0` Decisions Locked (`DEC-026` – `DEC-030` — Resolving `R0-Q1`..`R0-Q4`)
 
-No product-direction ambiguities remain open. The following purely empirical measurements require executing [R0-EXECUTION-PLAN.md](R0-EXECUTION-PLAN.md) (after explicit Owner `L2`/`L3` authorization):
-1. **`R0-Q1` (Python 3.11.9 Wheel Lock):** Confirm actual `uv lock --python 3.11.9` resolution and import smoke tests across candidate audio, STT, TTS, PDF, and SQLite-vector wheels on Windows x64.
-2. **`R0-Q2` (Voice Engine Selection):** Measure Indonesian + English code-switch WER, latency, speaker-echo resilience, and `MODEL_CARD` obligations across `faster-whisper` (`tiny`/`base`/`small`), `openWakeWord` vs `sherpa-onnx`, and `Piper` (`piper1-gpl` vs `sherpa-onnx` VITS) vs installed OS WinRT voices.
-3. **`R0-Q3` (Document Parser Trade-Off under `DEC-022`):** Benchmark `PyMuPDF` (`AGPL-3.0`) vs `pypdfium2` (`Apache-2.0/BSD-3`) + `pypdf` on complex multi-column/table PDFs to record exact accuracy/speed vs copyleft obligation trade-offs before `R2`.
-4. **`R0-Q4` (Reference Adapter Conformance & Memory Envelope):** Measure `Qwen3-1.7B` and `Qwen3-4B` (`enable_thinking=false`, `Q8_0` KV cache) across `llama-server` (CPU & CUDA) and `Ollama`, plus WebView2 GPU placement and frame-interval telemetry across `Auto`/`60`/`120`/`Native` FPS settings.
+All four empirical `R0` verification tracks have been executed and verified in [R0-FEASIBILITY-REPORT.md](R0-FEASIBILITY-REPORT.md):
+
+| ID | Resolved Question | Locked Best-Fit Engineering Decision (`[EVIDENCE: R0-FEASIBILITY-REPORT]`) | Status |
+| :--- | :--- | :--- | :---: |
+| **`DEC-026`** | `R0-Q1` Python `3.11.9` Wheel Lock | Lock `CPython 3.11.9` + `uv` (`76+` core/audio/PDF/vector wheels verified on `win_amd64`); include `requests` + `scikit-learn` explicitly when `openwakeword --no-deps` is enabled. | **LOCKED (`G1`)** |
+| **`DEC-027`** | `R0-Q4` LLM Backends & Non-Thinking Contract | Ship `LlamaCppServerAdapter` (`Vulkan` `~37 MB` universal GPU/CPU runtime + optional `CUDA` runtime, enforcing `--jinja --reasoning-budget 0` + concise Tool Catalog: `Qwen3-1.7B` `477.5 ms` p50 / `103.5 tok/s` CUDA & `3.49s` p50 CPU; `Qwen3-4B` `100%` intent match at `2,914.5 MiB` VRAM) alongside `OllamaAdapter` (`external_local` / `managed_local`). | **LOCKED (`G1`)** |
+| **`DEC-028`** | `R0-Q2` Voice STT, TTS & Echo Guard | Default STT to **`faster-whisper small` (`int8`)** (`14.18%` clean / `17.38%` noisy WER vs `tiny` `35.8%` & `base` `27.3%`); use **`piper-tts 1.8.0` (`GPL-3.0-or-later`, `167 ms` p50)** with optional user-consented voice downloads + upstream `MODEL_CARD` notice and dynamically probed **WinRT OneCore** fallback; enforce **Endpoint-Aware Open-Speaker Echo Guard** (`5/5 → 0/5` bleed triggers). | **LOCKED (`G1`)** |
+| **`DEC-029`** | `R0-Q3` PDF Extractor & Vector Extension | Default PDF extraction to **`pypdfium2 5.15+` (`21.8 ms`) + `pypdf` (`BSD-3`) fallback**, keeping `PyMuPDF` (`AGPL-3.0`, `92.9 ms`) as an optional pluggable adapter tracked in `license_artifact`; lock **`sqlite-vec v0.1.9`** for `jarvis_knowledge.db`. | **LOCKED (`G1`)** |
+| **`DEC-030`** | `R0-Q4` UI Styleframe & High-Hz Pacing | Lock **Orbital Precision** SVG + `Motion` + DPR-capped Canvas 2D foundation with VSync-harmonic frame pacing (`Auto/30/60/120/Native` FPS, verified up to `200.0 FPS` `Native` & `0` frames in `ReducedMotion`/hidden) and native `<dialog>` `R2` focus-trapped approval (`Tolak (Esc)` default focus). | **LOCKED (`G1`)** |
