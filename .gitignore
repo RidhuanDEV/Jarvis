@@ -1,0 +1,90 @@
+# =============================================================================
+# J.A.R.V.I.S. — Repository Ignore Rules (Security, Privacy & Portability)
+# Never commit secrets, personal DBs, AI weights, runtimes, or machine-local paths.
+# =============================================================================
+
+# Machine-local & environment overrides (never commit personal paths or secrets)
+.env
+.env.*
+!.env.example
+*.local.toml
+*.local.json
+*.local.yaml
+.jarvis.dev.*
+
+# Credentials, keys & certificates
+*.pem
+*.key
+*.pfx
+*.p12
+*.kdbx
+secrets/
+vault/
+
+# Databases, WAL/SHM journals, indexes & backups
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+backups/
+*.jarvis-backup
+*.enc
+
+# AI models, voice weights & runtime binaries
+models/
+runtimes/
+*.gguf
+*.onnx
+*.onnx.json
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.tflite
+
+# Ephemeral media, logs, traces & benchmark raw outputs
+logs/
+*.log
+tmp/
+temp/
+cache/
+captures/
+*.wav
+*.pcm
+*.mp3
+*.png.raw
+
+# Python toolchain & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+
+# Node / Frontend / Playwright / Vitest
+node_modules/
+apps/desktop/dist/
+playwright-report/
+test-results/
+coverage/
+
+# Rust / Tauri build artifacts
+target/
+apps/desktop/src-tauri/target/
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
