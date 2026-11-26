@@ -11,11 +11,18 @@ pub struct BrokerState {
     pub transport: Arc<dyn LocalIpcTransport>,
     pub supervisor: Arc<dyn ProcessSupervisor>,
     pub http: reqwest::Client,
+    pub core_port: u16,
+    pub core_pid: Option<u32>,
+    pub core_launch_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BrokerStatus {
     pub transport_ready: bool,
+    pub core_connected: bool,
+    pub core_port: u16,
+    pub core_pid: Option<u32>,
+    pub core_error: Option<String>,
     pub offline_default: bool,
     pub version: &'static str,
 }
@@ -82,12 +89,25 @@ async fn forward_json(
 }
 
 #[tauri::command]
-pub fn get_broker_status() -> BrokerStatus {
-    BrokerStatus {
+pub async fn get_broker_status(state: State<'_, BrokerState>) -> Result<BrokerStatus, String> {
+    let health_url = format!("{}/healthz", state.transport.base_url());
+    let connected = match state.http.get(&health_url).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    };
+    Ok(BrokerStatus {
         transport_ready: true,
+        core_connected: connected,
+        core_port: state.core_port,
+        core_pid: state.core_pid,
+        core_error: if connected {
+            None
+        } else {
+            state.core_launch_error.clone()
+        },
         offline_default: true,
         version: "0.2.1",
-    }
+    })
 }
 
 #[tauri::command]
@@ -169,6 +189,25 @@ pub async fn complete_onboarding_step(
 ) -> Result<Value, String> {
     let path = format!("/v1/onboarding/steps/{step}?mark_completed={mark_completed}");
     forward_json(&state, reqwest::Method::POST, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn upsert_grant(
+    state: State<'_, BrokerState>,
+    capability: String,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::PUT,
+        "/v1/grants",
+        &serde_json::json!({
+            "subject_type": "local_owner",
+            "subject_id": "local_owner",
+            "capability": capability,
+            "scope": {}
+        }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -320,6 +359,79 @@ pub async fn revoke_remote_device(
 #[tauri::command]
 pub async fn list_preference_proposals(state: State<'_, BrokerState>) -> Result<Value, String> {
     forward_get(&state, "/v1/preferences/proposals").await
+}
+
+#[tauri::command]
+pub async fn add_knowledge_root(state: State<'_, BrokerState>, path: String) -> Result<Value, String> {
+    forward_json(&state, reqwest::Method::POST, "/v1/roots", &serde_json::json!({ "path": path })).await
+}
+
+#[tauri::command]
+pub async fn revoke_knowledge_root(state: State<'_, BrokerState>, root_id: String) -> Result<Value, String> {
+    let path = format!("/v1/roots/{root_id}");
+    forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn create_task(state: State<'_, BrokerState>, title: String) -> Result<Value, String> {
+    forward_json(&state, reqwest::Method::POST, "/v1/tasks", &serde_json::json!({ "title": title })).await
+}
+
+#[tauri::command]
+pub async fn record_expense(
+    state: State<'_, BrokerState>,
+    amount_minor: i64,
+    currency_iso: String,
+    kind: String,
+    category: String,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/expenses",
+        &serde_json::json!({
+            "amount_minor": amount_minor,
+            "currency_iso": currency_iso,
+            "kind": kind,
+            "category": category
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn add_ha_entity(
+    state: State<'_, BrokerState>,
+    entity_id: String,
+    friendly_name: String,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/iot/ha/entities",
+        &serde_json::json!({
+            "entity_id": entity_id,
+            "friendly_name": friendly_name,
+            "allowed_actions": ["read_state", "turn_on", "turn_off"]
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn decide_preference_proposal(
+    state: State<'_, BrokerState>,
+    proposal_id: String,
+    decision: String,
+) -> Result<Value, String> {
+    let path = format!("/v1/preferences/proposals/{proposal_id}/decide");
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        &path,
+        &serde_json::json!({ "decision": decision }),
+    )
+    .await
 }
 
 #[tauri::command]

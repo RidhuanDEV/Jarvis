@@ -1,9 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
+  BrokerStatusSchema,
   HardwareCapabilitiesResponseSchema,
   LicenseInventoryResponseSchema,
   StorageLocationsResponseSchema,
   TurnResponseSchema,
+  type BrokerStatus,
   type HardwareCapabilitiesResponse,
   type LicenseArtifact,
   type StorageLocation,
@@ -18,6 +20,7 @@ export interface FoundationBootstrapData {
   readonly capabilities: HardwareCapabilitiesResponse
   readonly storageLocations: ReadonlyArray<StorageLocation>
   readonly licenses: ReadonlyArray<LicenseArtifact>
+  readonly brokerStatus: BrokerStatus | null
   readonly source: 'tauri_broker' | 'preview_fixture'
 }
 
@@ -111,17 +114,49 @@ const PREVIEW_LICENSES: ReadonlyArray<LicenseArtifact> = [
   },
 ]
 
+async function waitForLiveCoreStatus(maxAttempts = 25, delayMs = 200): Promise<BrokerStatus | null> {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      const raw: unknown = await invoke('get_broker_status')
+      const parsed = BrokerStatusSchema.parse(raw)
+      if (parsed.core_connected) {
+        return parsed
+      }
+      if (parsed.core_error && i >= 3) {
+        return parsed
+      }
+    } catch {
+      // Broker still initializing
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs)
+    })
+  }
+  return null
+}
+
 export async function loadFoundationData(): Promise<FoundationBootstrapData> {
   if (!isTauriRuntime()) {
     return {
       capabilities: PREVIEW_CAPABILITIES,
       storageLocations: PREVIEW_STORAGE,
       licenses: PREVIEW_LICENSES,
+      brokerStatus: null,
       source: 'preview_fixture',
     }
   }
 
   try {
+    const brokerStatus = await waitForLiveCoreStatus()
+    if (!brokerStatus?.core_connected) {
+      return {
+        capabilities: PREVIEW_CAPABILITIES,
+        storageLocations: PREVIEW_STORAGE,
+        licenses: PREVIEW_LICENSES,
+        brokerStatus,
+        source: 'preview_fixture',
+      }
+    }
     const [rawCaps, rawStorage, rawLicenses]: [unknown, unknown, unknown] = await Promise.all([
       invoke('discover_capabilities'),
       invoke('get_storage_locations'),
@@ -134,6 +169,7 @@ export async function loadFoundationData(): Promise<FoundationBootstrapData> {
       capabilities: caps,
       storageLocations: storage.locations,
       licenses: licenses.artifacts,
+      brokerStatus,
       source: 'tauri_broker',
     }
   } catch {
@@ -141,8 +177,79 @@ export async function loadFoundationData(): Promise<FoundationBootstrapData> {
       capabilities: PREVIEW_CAPABILITIES,
       storageLocations: PREVIEW_STORAGE,
       licenses: PREVIEW_LICENSES,
+      brokerStatus: null,
       source: 'preview_fixture',
     }
+  }
+}
+
+export async function persistMemoryCreate(input: {
+  readonly kind: string
+  readonly content: string
+  readonly sensitivity: string
+}): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('create_memory', input)
+}
+
+export async function persistMemoryDelete(memoryId: string): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('delete_memory', { memoryId })
+}
+
+export async function persistReminderCreate(input: {
+  readonly title: string
+  readonly dueAtUtc: string
+  readonly timezoneIana: string
+}): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('create_reminder', {
+    title: input.title,
+    dueAtUtc: input.dueAtUtc,
+    timezoneIana: input.timezoneIana,
+  })
+}
+
+export async function persistTaskCreate(title: string): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('create_task', { title })
+}
+
+export async function persistExpenseRecord(input: {
+  readonly amountMinor: number
+  readonly currencyIso: string
+  readonly kind: 'expense' | 'refund'
+  readonly category: string
+}): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('record_expense', input)
+}
+
+export async function persistHaEntityAdd(entityId: string, friendlyName: string): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('add_ha_entity', { entityId, friendlyName })
+}
+
+export async function persistRemoteDeviceRevoke(deviceId: string): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('revoke_remote_device', { deviceId })
+}
+
+export async function persistPreferenceDecision(
+  proposalId: string,
+  decision: 'approve' | 'reject',
+): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('decide_preference_proposal', { proposalId, decision })
+}
+
+export async function persistOnboardingCompletion(
+  grantedCapabilities: ReadonlyArray<string>,
+): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('complete_onboarding_step', { step: 10, markCompleted: true })
+  for (const capability of grantedCapabilities) {
+    await invoke('upsert_grant', { capability })
   }
 }
 

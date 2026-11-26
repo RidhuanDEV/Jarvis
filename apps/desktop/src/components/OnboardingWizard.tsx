@@ -21,6 +21,7 @@ interface OnboardingWizardProps {
     readonly primaryLanguage: string
     readonly timezoneIana: string
     readonly setupMode: 'recommended' | 'custom'
+    readonly grantedCapabilities: ReadonlyArray<string>
   }) => void
 }
 
@@ -70,7 +71,7 @@ export function OnboardingWizard({
   })
   const [quietStart, setQuietStart] = useState('22:00')
   const [quietEnd, setQuietEnd] = useState('07:00')
-  const [allowVolumeGrant, setAllowVolumeGrant] = useState(true)
+  const [allowVolumeGrant, setAllowVolumeGrant] = useState(false)
   const [allowAppGrant, setAllowAppGrant] = useState(false)
   const [allowNetworkGrant, setAllowNetworkGrant] = useState(false)
 
@@ -409,9 +410,18 @@ export function OnboardingWizard({
         ) : (
           <button
             type="button"
-            onClick={() =>
-              onCompleteOnboarding({ primaryLanguage, timezoneIana, setupMode })
-            }
+            onClick={() => {
+              const caps: string[] = ['system.time', 'memory.write', 'reminder.write']
+              if (allowVolumeGrant) caps.push('os.volume')
+              if (allowAppGrant) caps.push('os.app.launch')
+              if (allowNetworkGrant) caps.push('web.search')
+              onCompleteOnboarding({
+                primaryLanguage,
+                timezoneIana,
+                setupMode,
+                grantedCapabilities: caps,
+              })
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors hover:brightness-110 active:scale-[0.99]"
             style={{ backgroundColor: 'var(--status-ok)', color: '#080d17' }}
           >

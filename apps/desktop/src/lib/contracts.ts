@@ -279,3 +279,14 @@ export const PreferenceProposalItemSchema = z.object({
   status: z.enum(['pending', 'approved', 'rejected', 'dismissed']),
 })
 export type PreferenceProposalItem = z.infer<typeof PreferenceProposalItemSchema>
+
+export const BrokerStatusSchema = z.object({
+  transport_ready: z.boolean(),
+  core_connected: z.boolean(),
+  core_port: z.number().int().nonnegative(),
+  core_pid: z.number().int().positive().nullable(),
+  core_error: z.string().nullable(),
+  offline_default: z.boolean(),
+  version: z.string(),
+})
+export type BrokerStatus = z.infer<typeof BrokerStatusSchema>

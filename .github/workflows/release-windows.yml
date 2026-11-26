@@ -68,23 +68,29 @@ jobs:
       - name: Generate CycloneDX 1.5 SBOM, THIRD-PARTY-NOTICES and SHA256SUMS
         run: uv run --project core python scripts/generate_release_sbom.py --output-dir release-artifacts/compliance --verify-ci-pinning
 
-      - name: Build Tauri Minimal Base Bundle (0 GB forced AI model downloads)
+      - name: Build Tauri Minimal Base Installer (NSIS per-user, 0 GB forced AI model downloads)
         working-directory: apps/desktop
-        run: npx tauri build --no-bundle
+        run: npx tauri build --bundles nsis
 
-      - name: Collect release binary and compute release checksums
+      - name: Collect release binary, NSIS installer and compute release checksums
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path release-artifacts/bin | Out-Null
+          New-Item -ItemType Directory -Force -Path release-artifacts/bin, release-artifacts/installer | Out-Null
           Copy-Item apps/desktop/src-tauri/target/release/jarvis-desktop.exe release-artifacts/bin/
-          $hash = (Get-FileHash release-artifacts/bin/jarvis-desktop.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  bin/jarvis-desktop.exe" | Add-Content -Encoding utf8 release-artifacts/compliance/SHA256SUMS.txt
+          Copy-Item apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe release-artifacts/installer/
+          $binHash = (Get-FileHash release-artifacts/bin/jarvis-desktop.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$binHash  bin/jarvis-desktop.exe" | Add-Content -Encoding utf8 release-artifacts/compliance/SHA256SUMS.txt
+          foreach ($inst in Get-ChildItem release-artifacts/installer/*-setup.exe) {
+            $ih = (Get-FileHash $inst.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$ih  installer/$($inst.Name)" | Add-Content -Encoding utf8 release-artifacts/compliance/SHA256SUMS.txt
+          }
 
       - name: Generate SLSA v1.2 build provenance attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             release-artifacts/bin/jarvis-desktop.exe
+            release-artifacts/installer/*-setup.exe
             release-artifacts/compliance/sbom.cdx.json
 
       - name: Upload release artifacts

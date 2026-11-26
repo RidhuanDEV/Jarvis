@@ -1,10 +1,12 @@
 //! J.A.R.V.I.S. Native Desktop Broker Library (Tauri 2 + System Tray + IPC + Process Supervisor).
 
 pub mod commands;
+pub mod core_launcher;
 pub mod ipc_transport;
 pub mod process_supervisor;
 
 use crate::commands::BrokerState;
+use crate::core_launcher::{pick_ephemeral_loopback_port, spawn_local_core};
 use crate::ipc_transport::AuthenticatedLocalTransport;
 use crate::process_supervisor::{NativeProcessSupervisor, ProcessSupervisor};
 use std::sync::Arc;
@@ -15,14 +17,19 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let port = pick_ephemeral_loopback_port().unwrap_or(47123);
     let token = AuthenticatedLocalTransport::generate_random_token();
     let transport = Arc::new(
-        AuthenticatedLocalTransport::new_loopback(47123, token)
+        AuthenticatedLocalTransport::new_loopback(port, token.clone())
             .expect("valid CSPRNG 256-bit IPC token"),
     );
     let supervisor = Arc::new(
         NativeProcessSupervisor::new().expect("initialize platform process supervisor"),
     );
+
+    // Spawn local Python Core under Win32 Job Object (KILL_ON_JOB_CLOSE) with token piped via stdin
+    let launch = spawn_local_core(supervisor.as_ref(), port, &token);
+
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .no_proxy()
@@ -33,6 +40,9 @@ pub fn run() {
         transport,
         supervisor: supervisor.clone(),
         http,
+        core_port: port,
+        core_pid: launch.process.as_ref().map(|p| p.pid),
+        core_launch_error: launch.error,
     };
 
     tauri::Builder::default()
@@ -78,6 +88,7 @@ pub fn run() {
             commands::lock_session,
             commands::submit_turn,
             commands::complete_onboarding_step,
+            commands::upsert_grant,
             commands::get_audio_state,
             commands::set_audio_mode,
             commands::list_memories,
@@ -98,6 +109,12 @@ pub fn run() {
             commands::list_remote_devices,
             commands::revoke_remote_device,
             commands::list_preference_proposals,
+            commands::add_knowledge_root,
+            commands::revoke_knowledge_root,
+            commands::create_task,
+            commands::record_expense,
+            commands::add_ha_entity,
+            commands::decide_preference_proposal,
             commands::emergency_stop_managed_workers,
         ])
         .on_window_event(move |_window, event| {

@@ -40,8 +40,17 @@ import {
   dispatchApprovalDecision,
   dispatchCommandTurn,
   loadFoundationData,
+  persistExpenseRecord,
+  persistHaEntityAdd,
+  persistMemoryCreate,
+  persistMemoryDelete,
+  persistOnboardingCompletion,
+  persistPreferenceDecision,
+  persistReminderCreate,
+  persistRemoteDeviceRevoke,
+  persistTaskCreate,
 } from './lib/brokerClient'
-import type { ApprovalChallenge } from './lib/contracts'
+import type { ApprovalChallenge, BrokerStatus } from './lib/contracts'
 import { useJarvisStore, type NavigationTab } from './store/jarvisStore'
 
 const NAV_ITEMS: ReadonlyArray<{ readonly id: NavigationTab; readonly label: string }> = [
@@ -125,6 +134,8 @@ export function App() {
   } = useJarvisStore()
 
   const [turnInput, setTurnInput] = useState('')
+  const [brokerStatus, setBrokerStatus] = useState<BrokerStatus | null>(null)
+  const [brokerSource, setBrokerSource] = useState<'tauri_broker' | 'preview_fixture'>('preview_fixture')
 
   useEffect(() => {
     let active = true
@@ -133,6 +144,8 @@ export function App() {
       setCapabilities(data.capabilities)
       setStorageLocations(data.storageLocations)
       setLicenses(data.licenses)
+      setBrokerStatus(data.brokerStatus)
+      setBrokerSource(data.source)
     })
     return () => {
       active = false
@@ -220,6 +233,24 @@ export function App() {
           </span>
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Personal Intelligence OS · v0.2.1
+          </span>
+          <span
+            data-testid="badge-core-ipc"
+            title={
+              brokerStatus?.core_connected
+                ? `Core PID ${brokerStatus.core_pid ?? '?'} @ 127.0.0.1:${brokerStatus.core_port}`
+                : brokerStatus?.core_error ?? 'Standalone browser preview fixture'
+            }
+            className="font-mono-tabular rounded-md border px-2 py-0.5 text-[11px]"
+            style={{
+              borderColor:
+                brokerSource === 'tauri_broker' ? 'var(--status-ok)' : 'var(--border-subtle)',
+              color: brokerSource === 'tauri_broker' ? 'var(--status-ok)' : 'var(--text-muted)',
+            }}
+          >
+            {brokerSource === 'tauri_broker'
+              ? `CORE: LIVE (:${brokerStatus?.core_port ?? 0})`
+              : 'MODE: PREVIEW'}
           </span>
         </div>
 
@@ -455,7 +486,10 @@ export function App() {
                 setQualityTier(tier)
                 setFpsTarget(fps)
               }}
-              onCompleteOnboarding={({ timezoneIana: tz }) => completeOnboarding(tz)}
+              onCompleteOnboarding={({ timezoneIana: tz, grantedCapabilities }) => {
+                completeOnboarding(tz)
+                void persistOnboardingCompletion(grantedCapabilities)
+              }}
             />
           )}
 
@@ -471,11 +505,15 @@ export function App() {
             <PersonalLifePanel
               tasks={tasks}
               expenseSummaries={expenseSummaries}
-              onCreateTask={addTask}
+              onCreateTask={(title) => {
+                addTask(title)
+                void persistTaskCreate(title)
+              }}
               onToggleTaskDone={toggleTaskDone}
-              onRecordExpense={({ amountMinor, currencyIso, kind }) =>
+              onRecordExpense={({ amountMinor, currencyIso, kind }) => {
                 recordExpense({ amountMinor, currencyIso, kind })
-              }
+                void persistExpenseRecord({ amountMinor, currencyIso, kind, category: 'general' })
+              }}
             />
           )}
 
@@ -493,18 +531,28 @@ export function App() {
               preferenceProposals={preferenceProposals}
               activePersonaVerbosity={activePersonaVerbosity}
               onSetCameraActive={setCameraActive}
-              onAddHaEntity={addHaEntity}
+              onAddHaEntity={(entityId, friendlyName) => {
+                const ok = addHaEntity(entityId, friendlyName)
+                if (ok) void persistHaEntityAdd(entityId, friendlyName)
+                return ok
+              }}
               onToggleRemoteGateway={toggleRemoteGateway}
               onToggleRemoteHostAvailable={toggleRemoteHostAvailable}
-              onRevokeRemoteDevice={revokeRemoteDevice}
-              onDecideProposal={decidePreferenceProposal}
+              onRevokeRemoteDevice={(deviceId) => {
+                revokeRemoteDevice(deviceId)
+                void persistRemoteDeviceRevoke(deviceId)
+              }}
+              onDecideProposal={(id, decision) => {
+                decidePreferenceProposal(id, decision)
+                void persistPreferenceDecision(id, decision)
+              }}
             />
           )}
 
           {activeTab === 'memories' && (
             <MemoryVaultPanel
               memories={memories}
-              onCreateMemory={({ kind, content, sensitivity }) =>
+              onCreateMemory={({ kind, content, sensitivity }) => {
                 addMemory({
                   id: `mem-${Date.now()}`,
                   kind,
@@ -517,9 +565,13 @@ export function App() {
                   created_at: new Date().toISOString(),
                   updated_at: new Date().toISOString(),
                 })
-              }
+                void persistMemoryCreate({ kind, content, sensitivity })
+              }}
               onApproveProposal={(id) => approveMemoryProposal(id)}
-              onDeleteMemory={(id) => removeMemory(id)}
+              onDeleteMemory={(id) => {
+                removeMemory(id)
+                void persistMemoryDelete(id)
+              }}
             />
           )}
 
@@ -527,16 +579,18 @@ export function App() {
             <RemindersPanel
               reminders={reminders}
               defaultTimezone={timezoneIana}
-              onCreateReminder={({ title, minutesFromNow, timezoneIana: tz }) =>
+              onCreateReminder={({ title, minutesFromNow, timezoneIana: tz }) => {
+                const dueAtUtc = new Date(Date.now() + minutesFromNow * 60_000).toISOString()
                 addReminder({
                   id: `rem-${Date.now()}`,
                   title,
-                  due_at_utc: new Date(Date.now() + minutesFromNow * 60_000).toISOString(),
+                  due_at_utc: dueAtUtc,
                   timezone_iana: tz,
                   state: 'scheduled',
                   revision: 1,
                 })
-              }
+                void persistReminderCreate({ title, dueAtUtc, timezoneIana: tz })
+              }}
               onDismissReminder={(id) => dismissReminder(id)}
             />
           )}

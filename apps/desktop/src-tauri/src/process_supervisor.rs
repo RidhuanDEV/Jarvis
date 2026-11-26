@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use thiserror::Error;
@@ -39,6 +41,15 @@ pub trait ProcessSupervisor: Send + Sync {
         &self,
         program: &str,
         args: &[&str],
+        label: &str,
+    ) -> Result<SupervisedProcess, SupervisorError>;
+    fn spawn_managed_with_stdin_and_env(
+        &self,
+        program: &str,
+        args: &[&str],
+        env_vars: &[(&str, &str)],
+        stdin_payload: Option<&[u8]>,
+        working_dir: Option<&Path>,
         label: &str,
     ) -> Result<SupervisedProcess, SupervisorError>;
     fn register_external(&self, pid: u32, label: &str) -> SupervisedProcess;
@@ -179,11 +190,43 @@ impl ProcessSupervisor for NativeProcessSupervisor {
         args: &[&str],
         label: &str,
     ) -> Result<SupervisedProcess, SupervisorError> {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
+        self.spawn_managed_with_stdin_and_env(program, args, &[], None, None, label)
+    }
+
+    fn spawn_managed_with_stdin_and_env(
+        &self,
+        program: &str,
+        args: &[&str],
+        env_vars: &[(&str, &str)],
+        stdin_payload: Option<&[u8]>,
+        working_dir: Option<&Path>,
+        label: &str,
+    ) -> Result<SupervisedProcess, SupervisorError> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .stdin(if stdin_payload.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+
+        if let Some(dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+        for (k, v) in env_vars {
+            cmd.env(k, v);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| SupervisorError::SpawnFailed(e.to_string()))?;
 
@@ -197,6 +240,19 @@ impl ProcessSupervisor for NativeProcessSupervisor {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(err);
+                }
+            }
+        }
+
+        // Write secret token over inherited stdin pipe and immediately close pipe EOF
+        if let Some(payload) = stdin_payload {
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(err) = stdin.write_all(payload).and_then(|()| stdin.flush()) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(SupervisorError::SpawnFailed(format!(
+                        "Failed writing inherited stdin pipe: {err}"
+                    )));
                 }
             }
         }
