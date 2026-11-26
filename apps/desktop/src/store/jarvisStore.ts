@@ -3,12 +3,15 @@ import type {
   ApprovalChallenge,
   CurrencyExpenseSummary,
   FpsTarget,
+  HaEntityItem,
   HardwareCapabilitiesResponse,
   KnowledgeRootItem,
   LicenseArtifact,
   MachineState,
   MemoryItem,
+  PreferenceProposalItem,
   ReminderItem,
+  RemoteDeviceItem,
   RuntimeOwnershipMode,
   SequencedDomainEvent,
   StorageLocation,
@@ -25,6 +28,7 @@ export type NavigationTab =
   | 'knowledge'
   | 'life'
   | 'workflows'
+  | 'ecosystem'
   | 'memories'
   | 'reminders'
   | 'capabilities'
@@ -34,7 +38,7 @@ export type NavigationTab =
 
 export interface PrivacyBadges {
   readonly micMode: 'muted' | 'ptt' | 'wake'
-  readonly cameraActive: false
+  readonly cameraActive: boolean
   readonly offlineMode: boolean
   readonly executionZone: 'direct_offline' | 'local_device' | 'private_lan'
 }
@@ -62,6 +66,12 @@ export interface JarvisStoreState {
   tasks: ReadonlyArray<TaskItem>
   expenseSummaries: ReadonlyArray<CurrencyExpenseSummary>
   workflows: ReadonlyArray<WorkflowItem>
+  haEntities: ReadonlyArray<HaEntityItem>
+  remoteGatewayEnabled: boolean
+  remoteHostAvailable: boolean
+  remoteDevices: ReadonlyArray<RemoteDeviceItem>
+  preferenceProposals: ReadonlyArray<PreferenceProposalItem>
+  activePersonaVerbosity: 'brief' | 'standard' | 'detailed'
   onboardingCompleted: boolean
   timezoneIana: string
   lastTurnReply: string
@@ -98,6 +108,12 @@ export interface JarvisStoreState {
     readonly kind: 'expense' | 'refund'
   }) => void
   addWorkflow: (name: string) => void
+  setCameraActive: (active: boolean) => void
+  addHaEntity: (entityId: string, friendlyName: string) => boolean
+  toggleRemoteGateway: () => void
+  toggleRemoteHostAvailable: () => void
+  revokeRemoteDevice: (deviceId: string) => void
+  decidePreferenceProposal: (id: string, decision: 'approve' | 'reject') => void
   completeOnboarding: (timezoneIana: string) => void
   setLastTurnReply: (reply: string, state?: MachineState) => void
   updateFrameTelemetry: (telemetry: FrameTelemetrySnapshot) => void
@@ -139,6 +155,36 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
   tasks: [],
   expenseSummaries: [],
   workflows: [],
+  haEntities: [
+    {
+      entity_id: 'light.desk_lamp',
+      domain: 'light',
+      friendly_name: 'Lampu Meja Kerja',
+      allowed_actions: ['read_state', 'turn_on', 'turn_off'],
+      enabled: true,
+    },
+  ],
+  remoteGatewayEnabled: false,
+  remoteHostAvailable: true,
+  remoteDevices: [
+    {
+      id: 'dev-sample-mobile',
+      label: 'Paired Mobile Client (Scoped)',
+      scopes: ['remote.status.read', 'remote.chat.send', 'remote.reminder.read'],
+      revoked_at: null,
+    },
+  ],
+  preferenceProposals: [
+    {
+      id: 'prop-verbosity-brief',
+      preference_key: 'persona.verbosity',
+      proposed_value: 'brief',
+      rationale: 'Terdeteksi 3 koreksi eksplisit lokal agar jawaban lebih ringkas.',
+      evidence_count: 3,
+      status: 'pending',
+    },
+  ],
+  activePersonaVerbosity: 'standard',
   onboardingCompleted: false,
   timezoneIana: 'UTC',
   lastTurnReply: '',
@@ -218,8 +264,9 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
         activeRequestId: null,
         canceledRequestIds: canceled,
         pendingApproval: null,
+        privacy: { ...s.privacy, cameraActive: false },
         machineState: s.privacy.offlineMode ? 'Offline' : 'Idle',
-        statusAnnouncement: 'Permintaan aktif dan persetujuan tertunda dibatalkan.',
+        statusAnnouncement: 'Permintaan aktif, kamera, dan persetujuan tertunda dibatalkan.',
       }
     }),
 
@@ -415,6 +462,87 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
       ],
       statusAnnouncement: `Workflow deklaratif '${name}' disimpan (≤ 5 langkah, 0 R3).`,
     })),
+  setCameraActive: (cameraActive) =>
+    set((s) => ({
+      privacy: { ...s.privacy, cameraActive },
+      statusAnnouncement: cameraActive
+        ? 'Kamera on-demand aktif dengan indikator visual (RAM-only, tanpa rekam latar belakang).'
+        : 'Kamera dihentikan dan buffer memori dibersihkan.',
+    })),
+  addHaEntity: (entityId, friendlyName) => {
+    const cleaned = entityId.trim().toLowerCase()
+    const bannedPrefix =
+      cleaned.startsWith('lock.') ||
+      cleaned.startsWith('alarm_control_panel.') ||
+      cleaned.startsWith('climate.') ||
+      cleaned.startsWith('valve.') ||
+      cleaned.startsWith('cover.') ||
+      /(?:lock|alarm|heater|gas|garage|medical)/.test(cleaned)
+    if (bannedPrefix || !cleaned.includes('.')) {
+      set({
+        statusAnnouncement: `Entitas '${entityId}' diblokir keras (R3 safety-critical, FR-IOT-03).`,
+      })
+      return false
+    }
+    const domain = cleaned.split('.')[0] ?? 'light'
+    set((s) => ({
+      haEntities: [
+        ...s.haEntities,
+        {
+          entity_id: cleaned,
+          domain,
+          friendly_name: friendlyName.trim() || cleaned,
+          allowed_actions: ['read_state', 'turn_on', 'turn_off'],
+          enabled: true,
+        },
+      ],
+      statusAnnouncement: `Entitas Home Assistant '${cleaned}' ditambahkan ke allowlist aman.`,
+    }))
+    return true
+  },
+  toggleRemoteGateway: () =>
+    set((s) => ({
+      remoteGatewayEnabled: !s.remoteGatewayEnabled,
+      statusAnnouncement: !s.remoteGatewayEnabled
+        ? 'Gateway remote privat diaktifkan (hanya VPN/TLS privat, tanpa port publik).'
+        : 'Gateway remote privat dinonaktifkan.',
+    })),
+  toggleRemoteHostAvailable: () =>
+    set((s) => ({
+      remoteHostAvailable: !s.remoteHostAvailable,
+      statusAnnouncement: !s.remoteHostAvailable
+        ? 'Host desktop kembali online untuk klien mobile berizin.'
+        : 'Host desktop disimulasikan tidur/offline — klien mobile menerima status Host Unreachable tanpa antre mutasi.',
+    })),
+  revokeRemoteDevice: (deviceId) =>
+    set((s) => ({
+      remoteDevices: s.remoteDevices.map((d) =>
+        d.id === deviceId ? { ...d, revoked_at: new Date().toISOString() } : d,
+      ),
+      statusAnnouncement: `Perangkat remote '${deviceId}' dicabut seketika.`,
+    })),
+  decidePreferenceProposal: (id, decision) =>
+    set((s) => {
+      const target = s.preferenceProposals.find((p) => p.id === id)
+      const nextVerbosity =
+        decision === 'approve' &&
+        target?.preference_key === 'persona.verbosity' &&
+        (target.proposed_value === 'brief' ||
+          target.proposed_value === 'standard' ||
+          target.proposed_value === 'detailed')
+          ? target.proposed_value
+          : s.activePersonaVerbosity
+      return {
+        preferenceProposals: s.preferenceProposals.map((p) =>
+          p.id === id ? { ...p, status: decision === 'approve' ? 'approved' : 'rejected' } : p,
+        ),
+        activePersonaVerbosity: nextVerbosity,
+        statusAnnouncement:
+          decision === 'approve'
+            ? 'Proposal preferensi disetujui secara eksplisit dan diterapkan.'
+            : 'Proposal preferensi ditolak — konfigurasi aktif tidak berubah.',
+      }
+    }),
   completeOnboarding: (timezoneIana) =>
     set({
       onboardingCompleted: true,

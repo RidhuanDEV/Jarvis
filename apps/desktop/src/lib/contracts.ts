@@ -252,3 +252,30 @@ export const WorkflowItemSchema = z.object({
   bound_hash: z.string(),
 })
 export type WorkflowItem = z.infer<typeof WorkflowItemSchema>
+
+export const HaEntityItemSchema = z.object({
+  entity_id: z.string(),
+  domain: z.string(),
+  friendly_name: z.string(),
+  allowed_actions: z.array(z.string()),
+  enabled: z.boolean(),
+})
+export type HaEntityItem = z.infer<typeof HaEntityItemSchema>
+
+export const RemoteDeviceItemSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  scopes: z.array(z.string()),
+  revoked_at: z.string().nullable(),
+})
+export type RemoteDeviceItem = z.infer<typeof RemoteDeviceItemSchema>
+
+export const PreferenceProposalItemSchema = z.object({
+  id: z.string(),
+  preference_key: z.string(),
+  proposed_value: z.string(),
+  rationale: z.string(),
+  evidence_count: z.number().int().positive(),
+  status: z.enum(['pending', 'approved', 'rejected', 'dismissed']),
+})
+export type PreferenceProposalItem = z.infer<typeof PreferenceProposalItemSchema>

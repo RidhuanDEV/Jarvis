@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from jarvis.application.ai_registry_service import AiRegistryError, AiRegistryService
 from jarvis.application.approval_service import ApprovalError, ApprovalService
 from jarvis.application.backup_service import BackupService, BackupServiceError
+from jarvis.application.camera_service import (
+    CameraCapturePort,
+    CameraServiceError,
+    OnDemandCameraService,
+)
 from jarvis.application.config_service import (
     ConfigService,
     ConfigServiceError,
@@ -34,11 +39,21 @@ from jarvis.application.ecosystem_service import (
     ExtensionManifest,
     PrivateLanProviderRegistration,
 )
+from jarvis.application.home_assistant_service import (
+    HomeAssistantClientPort,
+    HomeAssistantError,
+    HomeAssistantService,
+)
 from jarvis.application.knowledge_service import KnowledgeRagService, KnowledgeServiceError
 from jarvis.application.license_service import LicenseInventoryService
 from jarvis.application.memory_service import MemoryServiceError, MemoryVaultService
 from jarvis.application.personal_life_service import PersonalLifeError, PersonalLifeService
+from jarvis.application.preference_proposal_service import (
+    PreferenceProposalError,
+    PreferenceProposalService,
+)
 from jarvis.application.reminder_service import ReminderSchedulerService, ReminderServiceError
+from jarvis.application.remote_gateway_service import RemoteGatewayError, RemoteGatewayService
 from jarvis.application.screen_service import ScreenAwarenessError, ScreenAwarenessService
 from jarvis.application.storage_service import StorageService, StorageServiceError
 from jarvis.application.turn_orchestrator import TurnOrchestratorService
@@ -228,6 +243,10 @@ class CoreContainer:
     life_service: PersonalLifeService
     workflow_service: WorkflowEngineService
     ecosystem_service: EcosystemGovernanceService
+    camera_service: OnDemandCameraService
+    ha_service: HomeAssistantService
+    remote_gateway_service: RemoteGatewayService
+    preference_proposal_service: PreferenceProposalService
 
 
 class _StrictRequest(BaseModel):
@@ -427,6 +446,70 @@ class ToggleExtensionBody(_StrictRequest):
     enabled: bool
 
 
+class CameraGrantBody(_StrictRequest):
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+    device_id: str = Field(min_length=1, max_length=128)
+    explicit_local_consent: bool = False
+    is_os_locked: bool = False
+
+
+class CameraSnapshotBody(_StrictRequest):
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+    device_id: str = Field(min_length=1, max_length=128)
+    explicit_user_request: bool = False
+    is_os_locked: bool = False
+    is_suspended: bool = False
+
+
+class HaAllowlistBody(_StrictRequest):
+    entity_id: str = Field(min_length=3, max_length=128)
+    friendly_name: str = Field(min_length=1, max_length=128)
+    allowed_actions: tuple[str, ...] = Field(min_length=1, max_length=8)
+
+
+class HaActionBody(_StrictRequest):
+    entity_id: str = Field(min_length=3, max_length=128)
+    action: str = Field(min_length=2, max_length=64)
+    params: dict[str, Any] = Field(default_factory=dict)
+    is_os_locked: bool = False
+
+
+class RemoteGatewayConfigBody(_StrictRequest):
+    enabled: bool
+    bind_address: str = Field(min_length=3, max_length=64)
+    bind_port: int = Field(default=47443, ge=1024, le=65535)
+    tls_cert_fingerprint_sha256: str = Field(default="", max_length=64)
+    rate_limit_per_minute: int = Field(default=30, ge=1, le=120)
+
+
+class RemotePairingInitBody(_StrictRequest):
+    device_label: str = Field(min_length=2, max_length=64)
+    device_fingerprint: str = Field(min_length=8, max_length=128)
+
+
+class RemotePairingApproveBody(_StrictRequest):
+    pairing_code: str = Field(min_length=6, max_length=6)
+    scopes: tuple[str, ...] = Field(
+        default=("remote.status.read", "remote.chat.send", "remote.reminder.read"),
+        min_length=1,
+        max_length=8,
+    )
+    token_ttl_hours: int = Field(default=24, ge=1, le=168)
+    is_os_locked: bool = False
+
+
+class PreferenceProposalCreateBody(_StrictRequest):
+    preference_key: str = Field(min_length=3, max_length=128)
+    proposed_value: str = Field(min_length=1, max_length=128)
+    rationale: str = Field(min_length=3, max_length=500)
+    evidence_count: int = Field(default=2, ge=1, le=100)
+
+
+class PreferenceProposalDecideBody(_StrictRequest):
+    decision: str = Field(pattern=r"^(approve|reject|dismiss)$")
+    is_os_locked: bool = False
+
+
 def _error_status_for_code(code: ErrorCode) -> int:
     mapping = {
         ErrorCode.INVALID_ARGS: status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -471,6 +554,8 @@ def build_default_container(
     audio_port: AudioDevicePort | None = None,
     desktop_port: DesktopAutomationPort | None = None,
     notification_port: NotificationPort | None = None,
+    camera_port: CameraCapturePort | None = None,
+    ha_client: HomeAssistantClientPort | None = None,
 ) -> CoreContainer:
     data_dir = settings.resolved_data_dir()
     cache_dir = settings.resolved_cache_dir()
@@ -542,6 +627,10 @@ def build_default_container(
     life_service = PersonalLifeService(db, resolved_clock)
     workflow_service = WorkflowEngineService(db, policy_engine, resolved_clock)
     ecosystem_service = EcosystemGovernanceService(db, resolved_vault, resolved_clock)
+    camera_service = OnDemandCameraService(db, resolved_clock, event_bus, capture_port=camera_port)
+    ha_service = HomeAssistantService(db, resolved_clock, client=ha_client)
+    remote_gateway_service = RemoteGatewayService(db, resolved_clock)
+    preference_proposal_service = PreferenceProposalService(db, config_service, resolved_clock)
 
     ipc_transport = TokenIpcTransport(
         transport_kind="win_named_pipe_or_loopback" if sys.platform == "win32" else "loopback",
@@ -579,6 +668,10 @@ def build_default_container(
         life_service=life_service,
         workflow_service=workflow_service,
         ecosystem_service=ecosystem_service,
+        camera_service=camera_service,
+        ha_service=ha_service,
+        remote_gateway_service=remote_gateway_service,
+        preference_proposal_service=preference_proposal_service,
     )
 
 
@@ -1087,11 +1180,20 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/session/lock")
     async def lock_session(body: SessionLockBody, request: Request) -> dict[str, Any]:
+        corr = _corr(request)
         active_container.voice_service.on_session_locked()
-        canceled = active_container.approval_service.cancel_all_pending_on_lock(
-            reason=body.reason, correlation_id=_corr(request)
+        closed_cameras = active_container.camera_service.stop_and_revoke_all(
+            reason=body.reason, correlation_id=corr
         )
-        return {"schema_version": 1, "canceled_approvals": canceled}
+        active_container.remote_gateway_service.set_os_lock_state(True)
+        canceled = active_container.approval_service.cancel_all_pending_on_lock(
+            reason=body.reason, correlation_id=corr
+        )
+        return {
+            "schema_version": 1,
+            "canceled_approvals": canceled,
+            "closed_cameras": closed_cameras,
+        }
 
     # --- Phase 3: Turn Orchestration (Deterministic-First + Bounded LLM) ---
 
@@ -1821,6 +1923,200 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             )
             return JSONResponse({"schema_version": 1, "extension": rec.model_dump(mode="json")})
         except EcosystemServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 5 (R3): On-Demand Camera, Home Assistant Allowlist, Private Remote Gateway & Preference Proposals ---
+
+    @app.get("/v1/camera/state")
+    async def get_camera_state() -> dict[str, Any]:
+        return {"schema_version": 1, "camera": active_container.camera_service.get_state().model_dump(mode="json")}
+
+    @app.post("/v1/camera/grant")
+    async def grant_camera_session(body: CameraGrantBody, request: Request) -> Response:
+        try:
+            st = active_container.camera_service.grant_session_permission(
+                session_id=body.session_id,
+                device_id=body.device_id,
+                explicit_local_consent=body.explicit_local_consent,
+                is_os_locked=body.is_os_locked,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "camera": st.model_dump(mode="json")})
+        except CameraServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/camera/snapshot")
+    async def capture_camera_snapshot(body: CameraSnapshotBody, request: Request) -> Response:
+        try:
+            snap = active_container.camera_service.capture_on_demand_snapshot(
+                session_id=body.session_id,
+                device_id=body.device_id,
+                explicit_user_request=body.explicit_user_request,
+                channel="local",
+                is_os_locked=body.is_os_locked,
+                is_suspended=body.is_suspended,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "snapshot": snap.model_dump(mode="json")})
+        except CameraServiceError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/camera/stop")
+    async def stop_camera(request: Request) -> dict[str, Any]:
+        closed = active_container.camera_service.stop_and_revoke_all(
+            reason="user_stop", correlation_id=_corr(request)
+        )
+        return {"schema_version": 1, "devices_closed": closed}
+
+    @app.get("/v1/iot/ha/entities")
+    async def list_ha_entities() -> dict[str, Any]:
+        items = active_container.ha_service.list_allowlisted_entities()
+        return {"schema_version": 1, "entities": [e.model_dump(mode="json") for e in items]}
+
+    @app.post("/v1/iot/ha/entities")
+    async def add_ha_entity(body: HaAllowlistBody, request: Request) -> Response:
+        try:
+            rec = active_container.ha_service.register_allowlisted_entity(
+                entity_id=body.entity_id,
+                friendly_name=body.friendly_name,
+                allowed_actions=body.allowed_actions,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "entity": rec.model_dump(mode="json")},
+            )
+        except HomeAssistantError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/iot/ha/actuate")
+    async def actuate_ha_entity(body: HaActionBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        try:
+            res = active_container.ha_service.execute_entity_action(
+                entity_id=body.entity_id,
+                action=body.action,
+                params=body.params,
+                offline_mode=cfg.ai.offline_mode,
+                channel="local",
+                is_os_locked=body.is_os_locked,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "result": res.model_dump(mode="json")})
+        except HomeAssistantError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/remote/config")
+    async def get_remote_gateway_config() -> dict[str, Any]:
+        cfg = active_container.remote_gateway_service.get_config()
+        return {"schema_version": 1, "gateway": cfg.model_dump(mode="json")}
+
+    @app.put("/v1/remote/config")
+    async def configure_remote_gateway(body: RemoteGatewayConfigBody, request: Request) -> Response:
+        try:
+            cfg = active_container.remote_gateway_service.configure_gateway(
+                enabled=body.enabled,
+                bind_address=body.bind_address,
+                bind_port=body.bind_port,
+                tls_cert_fingerprint_sha256=body.tls_cert_fingerprint_sha256,
+                rate_limit_per_minute=body.rate_limit_per_minute,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "gateway": cfg.model_dump(mode="json")})
+        except RemoteGatewayError as exc:
+            return _error_response(
+                code=exc.code, message=str(exc), correlation_id=_corr(request), http_status=exc.http_status
+            )
+
+    @app.get("/v1/remote/devices")
+    async def list_remote_devices() -> dict[str, Any]:
+        devices = active_container.remote_gateway_service.list_devices()
+        return {"schema_version": 1, "devices": [d.model_dump(mode="json") for d in devices]}
+
+    @app.post("/v1/remote/pairing/initiate")
+    async def initiate_remote_pairing(body: RemotePairingInitBody, request: Request) -> Response:
+        try:
+            challenge = active_container.remote_gateway_service.initiate_pairing(
+                device_label=body.device_label,
+                device_fingerprint=body.device_fingerprint,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "challenge": challenge.model_dump(mode="json")},
+            )
+        except RemoteGatewayError as exc:
+            return _error_response(
+                code=exc.code, message=str(exc), correlation_id=_corr(request), http_status=exc.http_status
+            )
+
+    @app.post("/v1/remote/pairing/{challenge_id}/approve")
+    async def approve_remote_pairing(
+        challenge_id: str, body: RemotePairingApproveBody, request: Request
+    ) -> Response:
+        try:
+            receipt = active_container.remote_gateway_service.approve_pairing_locally(
+                challenge_id=challenge_id,
+                pairing_code=body.pairing_code,
+                scopes=body.scopes,
+                token_ttl_hours=body.token_ttl_hours,
+                channel="local",
+                is_os_locked=body.is_os_locked,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "receipt": receipt.model_dump(mode="json")})
+        except RemoteGatewayError as exc:
+            return _error_response(
+                code=exc.code, message=str(exc), correlation_id=_corr(request), http_status=exc.http_status
+            )
+
+    @app.delete("/v1/remote/devices/{device_id}")
+    async def revoke_remote_device(device_id: str, request: Request) -> Response:
+        ok = active_container.remote_gateway_service.revoke_device(device_id, correlation_id=_corr(request))
+        if not ok:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message=f"Active paired device '{device_id}' not found.",
+                correlation_id=_corr(request),
+            )
+        return JSONResponse({"schema_version": 1, "revoked": True})
+
+    @app.get("/v1/preferences/proposals")
+    async def list_preference_proposals() -> dict[str, Any]:
+        props = active_container.preference_proposal_service.list_proposals()
+        return {"schema_version": 1, "proposals": [p.model_dump(mode="json") for p in props]}
+
+    @app.post("/v1/preferences/proposals")
+    async def create_preference_proposal(body: PreferenceProposalCreateBody, request: Request) -> Response:
+        try:
+            prop = active_container.preference_proposal_service.create_proposal(
+                preference_key=body.preference_key,
+                proposed_value=body.proposed_value,
+                rationale=body.rationale,
+                evidence_count=body.evidence_count,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "proposal": prop.model_dump(mode="json")},
+            )
+        except PreferenceProposalError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/preferences/proposals/{proposal_id}/decide")
+    async def decide_preference_proposal(
+        proposal_id: str, body: PreferenceProposalDecideBody, request: Request
+    ) -> Response:
+        try:
+            prop = active_container.preference_proposal_service.decide_proposal(
+                proposal_id,
+                decision=body.decision,  # type: ignore[arg-type]
+                channel="local",
+                is_os_locked=body.is_os_locked,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "proposal": prop.model_dump(mode="json")})
+        except PreferenceProposalError as exc:
             return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
     @app.get("/v1/licenses/inventory")

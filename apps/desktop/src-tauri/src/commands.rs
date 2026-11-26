@@ -299,6 +299,30 @@ pub async fn list_extensions(state: State<'_, BrokerState>) -> Result<Value, Str
 }
 
 #[tauri::command]
+pub async fn list_ha_entities(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/iot/ha/entities").await
+}
+
+#[tauri::command]
+pub async fn list_remote_devices(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/remote/devices").await
+}
+
+#[tauri::command]
+pub async fn revoke_remote_device(
+    state: State<'_, BrokerState>,
+    device_id: String,
+) -> Result<Value, String> {
+    let path = format!("/v1/remote/devices/{device_id}");
+    forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn list_preference_proposals(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/preferences/proposals").await
+}
+
+#[tauri::command]
 pub fn emergency_stop_managed_workers(state: State<'_, BrokerState>) -> usize {
     state.supervisor.close_all_managed()
 }

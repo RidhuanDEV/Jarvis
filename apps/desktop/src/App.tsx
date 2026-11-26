@@ -12,6 +12,7 @@ import {
   Layers,
   Mic,
   MicOff,
+  Radio,
   Scale,
   Send,
   ShieldAlert,
@@ -20,6 +21,7 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { ApprovalDialog } from './components/ApprovalDialog'
+import { EcosystemPanel } from './components/EcosystemPanels'
 import {
   CapabilitiesPanel,
   LicenseInventoryPanel,
@@ -48,6 +50,7 @@ const NAV_ITEMS: ReadonlyArray<{ readonly id: NavigationTab; readonly label: str
   { id: 'knowledge', label: 'Knowledge (Hybrid RAG)' },
   { id: 'life', label: 'Personal Life' },
   { id: 'workflows', label: 'Workflows' },
+  { id: 'ecosystem', label: 'Ecosystem & Remote (R3)' },
   { id: 'memories', label: 'Memory Vault' },
   { id: 'reminders', label: 'Reminders' },
   { id: 'capabilities', label: 'Hardware Discovery' },
@@ -78,6 +81,12 @@ export function App() {
     tasks,
     expenseSummaries,
     workflows,
+    haEntities,
+    remoteGatewayEnabled,
+    remoteHostAvailable,
+    remoteDevices,
+    preferenceProposals,
+    activePersonaVerbosity,
     timezoneIana,
     lastTurnReply,
     frameTelemetry,
@@ -104,6 +113,12 @@ export function App() {
     toggleTaskDone,
     recordExpense,
     addWorkflow,
+    setCameraActive,
+    addHaEntity,
+    toggleRemoteGateway,
+    toggleRemoteHostAvailable,
+    revokeRemoteDevice,
+    decidePreferenceProposal,
     completeOnboarding,
     setLastTurnReply,
     updateFrameTelemetry,
@@ -225,9 +240,12 @@ export function App() {
           <span
             data-testid="badge-cam"
             className="font-mono-tabular inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1"
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+            style={{
+              borderColor: privacy.cameraActive ? 'var(--status-warn)' : 'var(--border-subtle)',
+              color: privacy.cameraActive ? 'var(--status-warn)' : 'var(--text-secondary)',
+            }}
           >
-            CAM: OFF
+            {privacy.cameraActive ? 'CAM: ON-DEMAND' : 'CAM: OFF'}
           </span>
 
           <span
@@ -298,7 +316,9 @@ export function App() {
                       ? CalendarCheck2
                       : item.id === 'workflows'
                         ? GitBranch
-                        : item.id === 'memories'
+                        : item.id === 'ecosystem'
+                          ? Radio
+                          : item.id === 'memories'
                           ? Brain
                           : item.id === 'reminders'
                             ? Bell
@@ -461,6 +481,24 @@ export function App() {
 
           {activeTab === 'workflows' && (
             <WorkflowsPanel workflows={workflows} onCreateSampleWorkflow={addWorkflow} />
+          )}
+
+          {activeTab === 'ecosystem' && (
+            <EcosystemPanel
+              cameraActive={privacy.cameraActive}
+              haEntities={haEntities}
+              remoteGatewayEnabled={remoteGatewayEnabled}
+              remoteHostAvailable={remoteHostAvailable}
+              remoteDevices={remoteDevices}
+              preferenceProposals={preferenceProposals}
+              activePersonaVerbosity={activePersonaVerbosity}
+              onSetCameraActive={setCameraActive}
+              onAddHaEntity={addHaEntity}
+              onToggleRemoteGateway={toggleRemoteGateway}
+              onToggleRemoteHostAvailable={toggleRemoteHostAvailable}
+              onRevokeRemoteDevice={revokeRemoteDevice}
+              onDecideProposal={decidePreferenceProposal}
+            />
           )}
 
           {activeTab === 'memories' && (

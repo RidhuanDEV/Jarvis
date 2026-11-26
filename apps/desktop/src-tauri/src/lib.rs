@@ -94,6 +94,10 @@ pub fn run() {
             commands::get_expense_summary,
             commands::list_workflows,
             commands::list_extensions,
+            commands::list_ha_entities,
+            commands::list_remote_devices,
+            commands::revoke_remote_device,
+            commands::list_preference_proposals,
             commands::emergency_stop_managed_workers,
         ])
         .on_window_event(move |_window, event| {
