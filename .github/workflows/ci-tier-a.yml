@@ -1,0 +1,146 @@
+name: CI Tier-A Verification
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ci-tier-a-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-core:
+    name: Python Core (ruff, mypy, import-linter, pytest, SDLC sync)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and pinned Python 3.11.9
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.11.9"
+          enable-cache: true
+
+      - name: Install frozen Python dependencies
+        working-directory: core
+        run: uv sync --frozen --extra dev
+
+      - name: Verify SDLC Complete document sync
+        run: uv run --project core python scripts/build_sdlc_complete.py --check
+
+      - name: Run ruff lint
+        working-directory: core
+        run: uv run ruff check jarvis ../tests
+
+      - name: Run mypy strict typecheck
+        working-directory: core
+        run: uv run mypy jarvis
+
+      - name: Verify NFR-16 portability contracts (import-linter)
+        working-directory: core
+        run: uv run lint-imports
+
+      - name: Run full Tier-A test suite (Unit, Contract, Integration, 98-Case RTM)
+        working-directory: core
+        run: uv run pytest -v
+
+  desktop-ui:
+    name: Desktop UI (tsc, oxlint, vitest, vite build, npm audit)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked npm dependencies (lifecycle scripts disabled)
+        working-directory: apps/desktop
+        run: npm ci --ignore-scripts
+
+      - name: Run TypeScript strict check
+        working-directory: apps/desktop
+        run: npx tsc --noEmit
+
+      - name: Run Oxlint
+        working-directory: apps/desktop
+        run: npx oxlint src
+
+      - name: Run Vitest component and store tests
+        working-directory: apps/desktop
+        run: npx vitest run
+
+      - name: Build production desktop bundle
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Audit production npm dependencies (fail on high/critical)
+        working-directory: apps/desktop
+        run: npm audit --omit=dev --audit-level=high
+
+  tauri-broker:
+    name: Tauri Native Broker (Rust cargo test)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup stable Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - name: Run Rust broker unit tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
+
+  sbom-and-supplychain-gate:
+    name: SBOM, Third-Party Notices & CI Pinning Gate
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and pinned Python 3.11.9
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.11.9"
+
+      - name: Install frozen Python runtime
+        working-directory: core
+        run: uv sync --frozen
+
+      - name: Generate CycloneDX 1.5 SBOM, THIRD-PARTY-NOTICES, checksums and audit CI pinning
+        run: uv run --project core python scripts/generate_release_sbom.py --output-dir release-compliance --verify-ci-pinning
+
+      - name: Upload SBOM and compliance bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jarvis-tier-a-compliance-bundle
+          path: release-compliance/
+          retention-days: 30

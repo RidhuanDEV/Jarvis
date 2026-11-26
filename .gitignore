@@ -77,9 +77,11 @@ playwright-report/
 test-results/
 coverage/
 
-# Rust / Tauri build artifacts
+# Rust / Tauri build artifacts & generated release compliance bundles
 target/
 apps/desktop/src-tauri/target/
+release-compliance/
+release-artifacts/
 
 # OS & Editor metadata
 .DS_Store

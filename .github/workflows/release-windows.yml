@@ -1,0 +1,95 @@
+name: Release Minimal Base Installer (Windows x64)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build artifacts without publishing a GitHub Release"
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  verify-and-package:
+    name: Verify Tier-A, Package Minimal Base Installer & Attest Provenance
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and pinned Python 3.11.9
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.11.9"
+          enable-cache: true
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Setup stable Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - name: Run Python Core verification gate
+        working-directory: core
+        run: |
+          uv sync --frozen --extra dev
+          uv run ruff check jarvis ../tests
+          uv run mypy jarvis
+          uv run lint-imports
+          uv run pytest -q
+
+      - name: Run Desktop UI verification and production build
+        working-directory: apps/desktop
+        run: |
+          npm ci --ignore-scripts
+          npx tsc --noEmit
+          npx oxlint src
+          npx vitest run
+          npm run build
+
+      - name: Run Rust broker tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Generate CycloneDX 1.5 SBOM, THIRD-PARTY-NOTICES and SHA256SUMS
+        run: uv run --project core python scripts/generate_release_sbom.py --output-dir release-artifacts/compliance --verify-ci-pinning
+
+      - name: Build Tauri Minimal Base Bundle (0 GB forced AI model downloads)
+        working-directory: apps/desktop
+        run: npx tauri build --no-bundle
+
+      - name: Collect release binary and compute release checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifacts/bin | Out-Null
+          Copy-Item apps/desktop/src-tauri/target/release/jarvis-desktop.exe release-artifacts/bin/
+          $hash = (Get-FileHash release-artifacts/bin/jarvis-desktop.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  bin/jarvis-desktop.exe" | Add-Content -Encoding utf8 release-artifacts/compliance/SHA256SUMS.txt
+
+      - name: Generate SLSA v1.2 build provenance attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-artifacts/bin/jarvis-desktop.exe
+            release-artifacts/compliance/sbom.cdx.json
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jarvis-windows-x64-minimal-release
+          path: release-artifacts/
+          retention-days: 90
