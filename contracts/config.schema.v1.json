@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jarvis.local/contracts/config.schema.v1.json",
+  "title": "J.A.R.V.I.S. Versioned Configuration Document (v1)",
+  "description": "Secret-free, hardware-adaptive configuration schema. Secrets live exclusively in OS Vault references.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_name",
+    "locale",
+    "persona",
+    "storage",
+    "ai",
+    "visual",
+    "audio",
+    "permissions",
+    "onboarding"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "profile_name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "locale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary_language", "multilingual_enabled", "fallback_languages", "timezone_iana"],
+      "properties": {
+        "primary_language": { "type": "string", "minLength": 2, "maxLength": 16, "default": "id-ID" },
+        "multilingual_enabled": { "type": "boolean", "default": true },
+        "fallback_languages": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 2, "maxLength": 16 },
+          "maxItems": 8
+        },
+        "timezone_iana": { "type": "string", "minLength": 2, "maxLength": 64 }
+      }
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "verbosity", "quiet_hours", "proactive_enabled"],
+      "properties": {
+        "style": { "type": "string", "enum": ["concise", "balanced", "formal", "warm"] },
+        "verbosity": { "type": "string", "enum": ["brief", "standard", "detailed"] },
+        "quiet_hours": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "start_local", "end_local", "allow_voice_priority"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "start_local": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+            "end_local": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+            "allow_voice_priority": { "type": "boolean" }
+          }
+        },
+        "proactive_enabled": { "type": "boolean", "default": false }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roots", "cache_quota_bytes"],
+      "properties": {
+        "roots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "app_data",
+            "models",
+            "runtimes",
+            "core_db",
+            "knowledge_db",
+            "logs",
+            "temp",
+            "cache",
+            "backups",
+            "imported_docs",
+            "extensions"
+          ],
+          "properties": {
+            "app_data": { "type": "string", "minLength": 1 },
+            "models": { "type": "string", "minLength": 1 },
+            "runtimes": { "type": "string", "minLength": 1 },
+            "core_db": { "type": "string", "minLength": 1 },
+            "knowledge_db": { "type": "string", "minLength": 1 },
+            "logs": { "type": "string", "minLength": 1 },
+            "temp": { "type": "string", "minLength": 1 },
+            "cache": { "type": "string", "minLength": 1 },
+            "backups": { "type": "string", "minLength": 1 },
+            "imported_docs": { "type": "string", "minLength": 1 },
+            "extensions": { "type": "string", "minLength": 1 }
+          }
+        },
+        "shared_model_directories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 16
+        },
+        "cache_quota_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 1073741824
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active_mode",
+        "backend_preference",
+        "runtime_ownership_mode",
+        "lifecycle_policy",
+        "idle_unload_seconds",
+        "max_ram_mib",
+        "max_vram_mib",
+        "cpu_threads",
+        "context_tokens",
+        "offline_mode",
+        "allow_cross_zone_fallback"
+      ],
+      "properties": {
+        "active_mode": {
+          "type": "string",
+          "enum": ["direct", "eco", "performance", "balanced", "quality", "adaptive", "custom"]
+        },
+        "backend_preference": {
+          "type": "string",
+          "enum": ["auto", "cpu", "cuda", "vulkan", "rocm", "metal", "remote_lan"]
+        },
+        "runtime_ownership_mode": {
+          "type": "string",
+          "enum": ["none", "managed_local", "external_local", "authorized_lan", "custom_compatible"]
+        },
+        "lifecycle_policy": {
+          "type": "string",
+          "enum": ["always_loaded", "on_demand", "idle_unload"]
+        },
+        "idle_unload_seconds": { "type": "integer", "minimum": 30, "maximum": 86400 },
+        "max_ram_mib": { "type": "integer", "minimum": 512, "maximum": 1048576 },
+        "max_vram_mib": { "type": "integer", "minimum": 0, "maximum": 262144 },
+        "cpu_threads": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "context_tokens": { "type": "integer", "minimum": 512, "maximum": 131072 },
+        "offline_mode": { "type": "boolean", "default": true },
+        "allow_cross_zone_fallback": { "const": false }
+      }
+    },
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quality_tier",
+        "fps_target",
+        "gpu_acceleration_enabled",
+        "reduced_motion_override",
+        "battery_saver_throttle",
+        "gaming_throttle"
+      ],
+      "properties": {
+        "quality_tier": { "type": "string", "enum": ["cinematic", "balanced", "lite", "reduced_motion"] },
+        "fps_target": { "type": "string", "enum": ["auto", "30", "60", "120", "native"] },
+        "gpu_acceleration_enabled": { "type": "boolean", "default": true },
+        "reduced_motion_override": { "type": "boolean", "default": false },
+        "battery_saver_throttle": { "type": "boolean", "default": true },
+        "gaming_throttle": { "type": "boolean", "default": true }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "input_device_id", "output_device_id", "echo_guard_enabled", "speech_rate"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["muted", "ptt", "wake"] },
+        "input_device_id": { "type": ["string", "null"] },
+        "output_device_id": { "type": ["string", "null"] },
+        "echo_guard_enabled": { "type": "boolean", "default": true },
+        "speech_rate": { "type": "number", "minimum": 0.5, "maximum": 2.0 }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deny_by_default", "conversation_history_retention_enabled", "remote_gateway_enabled"],
+      "properties": {
+        "deny_by_default": { "const": true },
+        "conversation_history_retention_enabled": { "type": "boolean", "default": false },
+        "remote_gateway_enabled": { "type": "boolean", "default": false }
+      }
+    },
+    "onboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completed", "completed_steps", "setup_mode"],
+      "properties": {
+        "completed": { "type": "boolean" },
+        "completed_steps": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 10 },
+          "uniqueItems": true
+        },
+        "setup_mode": { "type": "string", "enum": ["recommended", "custom"] }
+      }
+    }
+  }
+}

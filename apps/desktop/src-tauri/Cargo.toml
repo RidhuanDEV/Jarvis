@@ -1,0 +1,30 @@
+[package]
+name = "jarvis-desktop"
+version = "0.2.1"
+description = "J.A.R.V.I.S. Local-First Hardware-Adaptive Personal Intelligence OS Desktop Broker"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "jarvis_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

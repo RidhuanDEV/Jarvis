@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+:root {
+  --surface-canvas: #080d17;
+  --surface-panel: #101927;
+  --surface-elevated: #162235;
+  --surface-interactive: #1c2c44;
+  --border-subtle: #233349;
+  --border-strong: #344a68;
+  --accent-core: #57dfff;
+  --accent-core-dim: rgba(87, 223, 255, 0.14);
+  --status-warn: #ffbe69;
+  --status-warn-dim: rgba(255, 190, 105, 0.14);
+  --status-danger: #ff737c;
+  --status-danger-dim: rgba(255, 115, 124, 0.15);
+  --status-ok: #5eead4;
+  --text-primary: #e6f1ff;
+  --text-secondary: #a9b9cc;
+  --text-muted: #7f93ac;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background-color: var(--surface-canvas);
+    color: var(--text-primary);
+    font-family:
+      "Inter",
+      "Segoe UI",
+      system-ui,
+      -apple-system,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Hard UI Craft Floor: restore explicit interactive cursors after Tailwind v4 preflight */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  select:not(:disabled),
+  label[for] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent-core);
+    outline-offset: 2px;
+  }
+}
+
+.font-mono-tabular {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+dialog.jarvis-approval-dialog {
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--status-warn);
+  border-radius: 0.75rem;
+  padding: 0;
+  max-width: 34rem;
+  width: calc(100% - 2rem);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+}
+
+dialog.jarvis-approval-dialog::backdrop {
+  background: rgba(4, 8, 16, 0.78);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

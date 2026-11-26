@@ -1,0 +1,113 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jarvis-core"
+version = "0.2.1"
+description = "J.A.R.V.I.S. Local-First Hardware-Adaptive Personal Intelligence Core"
+requires-python = ">=3.11.9,<3.12"
+dependencies = [
+    "argon2-cffi>=23.1.0",
+    "cryptography>=44.0.0",
+    "fastapi>=0.115.6",
+    "httpx>=0.28.1",
+    "jsonschema>=4.23.0",
+    "keyring>=25.6.0",
+    "platformdirs>=4.3.6",
+    "psutil>=6.1.1",
+    "pydantic>=2.10.4",
+    "pydantic-settings>=2.7.1",
+    "sqlite-vec>=0.1.6",
+    "structlog>=24.4.0",
+    "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+nvidia = [
+    "nvidia-ml-py>=12.560.30",
+]
+dev = [
+    "hypothesis>=6.122.0",
+    "import-linter>=2.1",
+    "mypy>=1.14.1",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.8.6",
+    "types-jsonschema>=4.23.0.20241208",
+    "types-psutil>=6.1.0.20241221",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["jarvis"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC"]
+ignore = ["S101", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"../tests/**" = ["S105", "S106", "S108", "S311", "S603", "S607"]
+"tests/**" = ["S105", "S106", "S108", "S311", "S603", "S607"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_any_explicit = false
+packages = ["jarvis"]
+
+[[tool.mypy.overrides]]
+module = ["sqlite_vec", "sqlite_vec.*", "pynvml", "pynvml.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.importlinter]
+root_package = "jarvis"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain layer has zero platform, infrastructure, or transport dependencies (NFR-16)"
+type = "forbidden"
+source_modules = ["jarvis.domain"]
+forbidden_modules = [
+    "jarvis.application",
+    "jarvis.infrastructure",
+    "jarvis.platform",
+    "jarvis.transport",
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "sqlite3",
+    "ctypes",
+    "winreg",
+    "msvcrt",
+    "keyring",
+    "psutil",
+    "platformdirs",
+    "pynvml",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application layer has zero direct OS/Win32 or platform-adapter imports (NFR-16)"
+type = "forbidden"
+source_modules = ["jarvis.application"]
+forbidden_modules = [
+    "jarvis.platform",
+    "jarvis.transport",
+    "fastapi",
+    "uvicorn",
+    "ctypes",
+    "winreg",
+    "msvcrt",
+    "pynvml",
+]

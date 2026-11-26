@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jarvis.local/contracts/events.schema.v1.json",
+  "title": "J.A.R.V.I.S. Reliable Sequenced Domain Event Envelope (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "seq",
+    "request_id",
+    "correlation_id",
+    "type",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_id": { "type": "string", "minLength": 8, "maxLength": 64 },
+    "seq": { "type": "integer", "minimum": 1 },
+    "request_id": { "type": ["string", "null"], "maxLength": 64 },
+    "correlation_id": { "type": "string", "minLength": 8, "maxLength": 64 },
+    "type": {
+      "type": "string",
+      "enum": [
+        "voice.state_changed",
+        "audio.devices_changed",
+        "request.state_changed",
+        "approval.required",
+        "approval.resolved",
+        "action.completed",
+        "job.due",
+        "reminder.delivered",
+        "provider.health_changed",
+        "profile.switch.started",
+        "profile.switch.committed",
+        "profile.switch.failed",
+        "storage.migration_progress",
+        "storage.space_low",
+        "resource.pressure_changed",
+        "visual.recommendation_changed",
+        "knowledge.index_progress",
+        "permission.revoked",
+        "session.locked"
+      ]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "payload": { "type": "object" }
+  }
+}
