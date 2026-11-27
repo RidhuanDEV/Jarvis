@@ -280,6 +280,41 @@ export const PreferenceProposalItemSchema = z.object({
 })
 export type PreferenceProposalItem = z.infer<typeof PreferenceProposalItemSchema>
 
+export const McpServerItemSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  version: z.string(),
+  transport: z.enum(['stdio', 'https_readonly']),
+  trust_tier: z.enum(['trusted_local', 'reviewed_readonly', 'untrusted']),
+  data_destination: z.string(),
+  allowed_scopes: z.array(z.string()),
+  enabled: z.boolean(),
+  quarantined: z.boolean(),
+  quarantine_reason: z.string().nullable(),
+  schema_pin_sha256: z.string().nullable(),
+  pinned_tools: z.array(
+    z.object({
+      tool_name: z.string(),
+      namespaced_tool_id: z.string(),
+      read_only: z.boolean(),
+      approved: z.boolean(),
+    }),
+  ),
+})
+export type McpServerItem = z.infer<typeof McpServerItemSchema>
+
+export const EcosystemConnectorItemSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['web_search', 'home_assistant', 'oauth_calendar', 'oauth_mail']),
+  display_name: z.string(),
+  endpoint_url: z.string(),
+  allowed_scopes: z.array(z.string()),
+  consent_acknowledged: z.boolean(),
+  enabled: z.boolean(),
+  revoked_at: z.string().nullable(),
+})
+export type EcosystemConnectorItem = z.infer<typeof EcosystemConnectorItemSchema>
+
 export const BrokerStatusSchema = z.object({
   transport_ready: z.boolean(),
   core_connected: z.boolean(),
@@ -290,3 +325,134 @@ export const BrokerStatusSchema = z.object({
   version: z.string(),
 })
 export type BrokerStatus = z.infer<typeof BrokerStatusSchema>
+
+export const LiveVoiceStatusSchema = z.object({
+  schema_version: z.literal(1),
+  mode: z.enum(['muted', 'wake', 'active', 'ptt']),
+  phase: z.enum([
+    'muted',
+    'standby_wake',
+    'listening_command',
+    'transcribing',
+    'thinking',
+    'speaking',
+    'unavailable',
+  ]),
+  amplitude: z.number().min(0).max(1),
+  stt_ready: z.boolean(),
+  stt_model: z.string().nullable(),
+  tts_ready: z.boolean(),
+  tts_model: z.string().nullable(),
+  mic_available: z.boolean(),
+  active_command_window: z.boolean(),
+  session_active: z.boolean().default(false),
+  session_seconds_left: z.number().int().nonnegative().default(0),
+  vad_engine: z.string().default('rms-fallback'),
+  wake_engine: z.string().default('whisper-fallback'),
+  last_transcript: z.string(),
+  last_reply: z.string(),
+  last_route_kind: z.string(),
+  last_llm_called: z.boolean(),
+  error: z.string().nullable(),
+  llm_ready: z.boolean(),
+  llm_starting: z.boolean(),
+  llm_model: z.string().nullable(),
+  llm_backend: z.string(),
+  llm_note: z.string(),
+})
+export type LiveVoiceStatus = z.infer<typeof LiveVoiceStatusSchema>
+
+export const MemoryListResponseSchema = z.object({
+  schema_version: z.literal(1),
+  memories: z.array(MemoryItemSchema),
+})
+
+export const MemoryCreateResponseSchema = z.object({
+  schema_version: z.literal(1),
+  memory: MemoryItemSchema,
+})
+
+export const ReminderListResponseSchema = z.object({
+  schema_version: z.literal(1),
+  reminders: z.array(ReminderItemSchema),
+})
+
+export const TaskListResponseSchema = z.object({
+  schema_version: z.literal(1),
+  tasks: z.array(TaskItemSchema),
+})
+
+export const KnowledgeRootListResponseSchema = z.object({
+  schema_version: z.literal(1),
+  roots: z.array(KnowledgeRootItemSchema),
+})
+
+export const KnowledgeRootCreateResponseSchema = z.object({
+  schema_version: z.literal(1),
+  root: KnowledgeRootItemSchema,
+})
+
+export const KnowledgeQueryResponseSchema = z.object({
+  schema_version: z.literal(1),
+  answer: z.string(),
+  sufficient_evidence: z.boolean(),
+  tools_disabled: z.boolean().default(true),
+  citations: z.array(z.record(z.string(), z.unknown())).default([]),
+})
+export type KnowledgeQueryResponse = z.infer<typeof KnowledgeQueryResponseSchema>
+
+export const ExpenseSummaryListResponseSchema = z.object({
+  schema_version: z.literal(1),
+  currencies: z.array(CurrencyExpenseSummarySchema),
+})
+
+export const AudioEndpointSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  direction: z.enum(['input', 'output']),
+  is_default: z.boolean(),
+  form_factor: z.enum(['headphones', 'headset', 'speakers', 'microphone', 'unknown']),
+})
+export type AudioEndpoint = z.infer<typeof AudioEndpointSchema>
+
+export const VoiceTimingTraceSchema = z.object({
+  request_id: z.string(),
+  transcript: z.string(),
+  detected_language: z.string(),
+  confidence: z.number(),
+  route_kind: z.string(),
+  stt_latency_ms: z.number(),
+  ttfa_from_end_of_speech_ms: z.number().nullable(),
+  total_perceived_ms: z.number().nullable(),
+})
+
+export const VoiceDiagnosticsResponseSchema = z.object({
+  schema_version: z.literal(1),
+  diagnostics: z.object({
+    mode: z.string(),
+    phase: z.string(),
+    selected_input_device: z.string(),
+    selected_output_device: z.string(),
+    output_form_factor: z.string(),
+    echo_guard_enabled: z.boolean(),
+    echo_guard_reason: z.string(),
+    voice_barge_in_allowed: z.boolean(),
+    live_rms: z.number(),
+    noise_floor_rms: z.number(),
+    clipping_events: z.number().int().nonnegative(),
+    queue_overflow_drops: z.number().int().nonnegative(),
+    utterance_drops: z.number().int().nonnegative(),
+    playback_generation: z.number().int().nonnegative(),
+    vad_engine: z.string(),
+    wake_engine: z.string(),
+    stt_model: z.string().nullable(),
+    stt_language_mode: z.string(),
+    speech_rate: z.number(),
+    installed_piper_voices: z.record(z.string(), z.string()),
+    last_confidence: z.number(),
+    last_detected_language: z.string(),
+    recent_traces: z.array(VoiceTimingTraceSchema),
+  }),
+  endpoints: z.array(AudioEndpointSchema),
+})
+export type VoiceDiagnosticsResponse = z.infer<typeof VoiceDiagnosticsResponseSchema>

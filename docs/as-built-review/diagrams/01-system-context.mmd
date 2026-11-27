@@ -1,0 +1,18 @@
+flowchart LR
+    Owner["Local Owner (Desktop User)"]
+    MicSpk["OS Default Mic & Speakers (PortAudio)"]
+    LocalFS["Local Filesystem & Opt-In Folders"]
+    WinOS["Windows 11 OS (Win32 / Credential Mgr / NVML)"]
+    ExtWeb["Public Web (Opt-In Fetch Only)"]
+    Unwired["Unwired / No Live Adapter: Camera, Home Assistant, Web Search, Remote Mobile"]
+
+    subgraph Host["Single Local Windows Workstation (127.0.0.1 Only)"]
+        Jarvis["J.A.R.V.I.S. Desktop + Core + Local LLM (v0.2.1)"]
+    end
+
+    Owner <-->|"Text UI, Voice, Native R2 Dialog, System Tray"| Jarvis
+    MicSpk <-->|"16kHz PCM In / 22.05kHz PCM Out (RAM only)"| Jarvis
+    LocalFS <-->|"Dual SQLite DBs, Encrypted Backups, Opt-In Docs"| Jarvis
+    WinOS <-->|"Job Object, Keyring, NVML, Foreground Title"| Jarvis
+    Jarvis -.->|"Opt-In /v1/web/fetch (when offline_mode=false)"| ExtWeb
+    Jarvis -.->|"Policy/DB stubs only — adapters are None"| Unwired

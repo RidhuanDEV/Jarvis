@@ -11,6 +11,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from jarvis.domain.ai_models import SttResult, TtsResult, TtsVoiceInfo
+from jarvis.domain.app_catalog import (
+    AppLaunchReceipt,
+    ApplicationCatalogEntry,
+    is_prohibited_binary_target,
+    normalize_app_query,
+)
 from jarvis.domain.models import (
     AudioEndpointInfo,
     HardwareSnapshot,
@@ -18,6 +24,7 @@ from jarvis.domain.models import (
     StorageVolumeInfo,
 )
 from jarvis.domain.ports import (
+    FileOpenReceipt,
     IpcEndpointInfo,
     ManagedProcessHandle,
     PathSafetyInspection,
@@ -233,6 +240,22 @@ class FakeDesktopAutomationAdapter:
         self.launched_apps.append(key)
         return True
 
+    def launch_catalog_entry(self, entry: ApplicationCatalogEntry) -> AppLaunchReceipt:
+        if entry.trust_class == "tier3_prohibited" or (
+            entry.activation_kind == "exe" and is_prohibited_binary_target(entry.target, entry.arguments)
+        ):
+            raise PermissionError(f"Application '{entry.display_name}' is prohibited (Tier-3).")
+        self.launched_apps.append(entry.app_id)
+        return AppLaunchReceipt(
+            accepted=True,
+            app_id=entry.app_id,
+            display_name=entry.display_name,
+            activation_kind=entry.activation_kind,
+            pid=42424,
+            verification_kind="os_activation_ack",
+            detail=f"Fake launched '{entry.display_name}'.",
+        )
+
     def get_volume_percent(self) -> int:
         return self._volume
 
@@ -243,6 +266,87 @@ class FakeDesktopAutomationAdapter:
         return self._volume
 
 
+class StaticApplicationCatalogAdapter:
+    """Deterministic ApplicationCatalogPort for unit/integration tests."""
+
+    def __init__(self, entries: tuple[ApplicationCatalogEntry, ...] | None = None) -> None:
+        self._entries = entries or (
+            ApplicationCatalogEntry(
+                app_id="calculator",
+                display_name="Calculator",
+                activation_kind="exe",
+                target="C:\\Windows\\System32\\calc.exe",
+                aliases=("kalkulator", "calc"),
+                source="static_test",
+                trust_class="tier1_ordinary",
+            ),
+            ApplicationCatalogEntry(
+                app_id="notepad",
+                display_name="Notepad",
+                activation_kind="exe",
+                target="C:\\Windows\\System32\\notepad.exe",
+                aliases=("catatan",),
+                source="static_test",
+                trust_class="tier1_ordinary",
+            ),
+            ApplicationCatalogEntry(
+                app_id="paint",
+                display_name="Paint",
+                activation_kind="exe",
+                target="C:\\Windows\\System32\\mspaint.exe",
+                aliases=("mspaint", "gambar"),
+                source="static_test",
+                trust_class="tier1_ordinary",
+            ),
+        )
+
+    def list_apps(self) -> tuple[ApplicationCatalogEntry, ...]:
+        return self._entries
+
+    def refresh(self) -> tuple[ApplicationCatalogEntry, ...]:
+        return self._entries
+
+    def find_by_id(self, app_id: str) -> ApplicationCatalogEntry | None:
+        norm = normalize_app_query(app_id)
+        for entry in self._entries:
+            if normalize_app_query(entry.app_id) == norm:
+                return entry
+        return None
+
+
+class FakeFileOpenerAdapter:
+    """Deterministic FileOpenerPort recording opened canonical paths without spawning OS viewers."""
+
+    def __init__(self, *, allow_live_open: bool = True) -> None:
+        self._allow_live_open = allow_live_open
+        self.opened_paths: list[str] = []
+
+    def open_registered_file(self, canonical_path: str, *, authorized_root: str) -> FileOpenReceipt:
+        root = Path(authorized_root).resolve(strict=False)
+        target = Path(canonical_path).resolve(strict=False)
+        if not target.is_relative_to(root):
+            return FileOpenReceipt(
+                opened=False,
+                canonical_path=str(target),
+                verification_kind="prohibited",
+                detail="File escapes authorized root.",
+            )
+        if not self._allow_live_open:
+            return FileOpenReceipt(
+                opened=False,
+                canonical_path=str(target),
+                verification_kind="disabled",
+                detail="Live file opening disabled.",
+            )
+        self.opened_paths.append(str(target))
+        return FileOpenReceipt(
+            opened=True,
+            canonical_path=str(target),
+            verification_kind="os_registered_open",
+            detail=f"Opened '{target.name}' via fake registered opener.",
+        )
+
+
 class FakeNotificationAdapter:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, bool]] = []
@@ -250,6 +354,14 @@ class FakeNotificationAdapter:
     def send_local_notification(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.sent.append((title, body, silent))
         return True
+
+
+class UnavailableNotificationAdapter:
+    """Honest production placeholder when OS toast notifications are not yet wired (IR-12, B06)."""
+
+    def send_local_notification(self, title: str, body: str, *, silent: bool = False) -> bool:
+        _ = (title, body, silent)
+        return False
 
 
 class FakeSttAdapter:

@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph P1["Process 1: jarvis-desktop.exe"]
+        T1Main["Main GUI Thread (Tauri Event Loop + Tray + Win32 Mutex)"]
+        T1Web["WebView2 Renderer Process(es) (React + 350ms setInterval + SVG rAF)"]
+        T1Tokio["Tokio Async Pool (reqwest HTTP 10s client)"]
+        Job1["Win32 Job Object #1 (KILL_ON_JOB_CLOSE)"]
+    end
+
+    subgraph P2["Process 2: python.exe -m jarvis.transport"]
+        T2Loop["Main Thread: Uvicorn Asyncio Event Loop (BLOCKS on sync SQLite/Argon2/SHA256!)"]
+        T2Boot["One-Shot Task: local_llm_manager.start_if_available()"]
+        T2PA["PortAudio C Callback Thread (_audio_cb -> queue max 250)"]
+        T2Cap["Daemon Thread: _capture_loop (BLOCKS synchronously on Whisper + LLM fut.result 65s + TTS join 60s!)"]
+        T2Tts["Ephemeral Thread(s): _consume_streaming_tts_queue / _speak_blocking (sd.play blocking)"]
+        Job2["Win32 Job Object #2 (KILL_ON_JOB_CLOSE)"]
+    end
+
+    subgraph P3["Process 3: llama-server.exe"]
+        T3Gpu["CUDA/Vulkan Inference Threads (Qwen3-4B / 1.7B, -c 4096, -ngl 99)"]
+    end
+
+    Job1 -->|"owns"| P2
+    Job2 -->|"owns"| P3
+    T1Web -->|"invoke()"| T1Tokio
+    T1Tokio <-->|"HTTP loopback"| T2Loop
+    T2PA -->|"32ms chunks"| T2Cap
+    T2Cap -->|"run_coroutine_threadsafe"| T2Loop
+    T2Cap -->|"sentence_q"| T2Tts
+    T2Loop <-->|"SSE HTTP"| T3Gpu

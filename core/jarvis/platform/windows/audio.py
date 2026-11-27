@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import sys
-import time
 from typing import Literal
 
 from jarvis.domain.ai_models import TtsResult, TtsVoiceInfo
@@ -137,7 +136,7 @@ class WindowsOneCoreVoiceProbeAdapter:
                                 language=lang,
                                 engine=self.engine_name,
                                 installed=True,
-                                license_spdx="BSD-3-Clause",
+                                license_spdx="Proprietary-Windows-OS",
                             )
                         )
         except OSError:
@@ -145,15 +144,9 @@ class WindowsOneCoreVoiceProbeAdapter:
         return tuple(voices)
 
     def synthesize(self, text: str, *, voice_id: str | None = None, rate: float = 1.0) -> TtsResult:
-        started = time.perf_counter()
-        voices = self.list_installed_voices()
-        chosen = voice_id or (voices[0].id if voices else "unavailable")
-        # Return silent valid minimal WAV header placeholder when invoked without winrt runtime extra
-        elapsed = round((time.perf_counter() - started) * 1000.0, 2)
-        return TtsResult(
-            audio_pcm_or_wav=b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00",
-            sample_rate_hz=16000,
-            elapsed_ms=elapsed,
-            engine_name=self.engine_name,
-            voice_id=chosen,
+        _ = (text, voice_id, rate)
+        # B12 / DEF-17: Never return a fake 44-byte silent WAV pretending synthesis succeeded!
+        raise RuntimeError(
+            "Windows OneCore voice packs were probed from the registry, but live WinRT TTS synthesis "
+            "is unavailable in this runtime. Install/enable a local Piper voice model for offline speech."
         )

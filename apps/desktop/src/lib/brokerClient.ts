@@ -1,15 +1,36 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import {
   BrokerStatusSchema,
+  ExpenseSummaryListResponseSchema,
   HardwareCapabilitiesResponseSchema,
+  KnowledgeQueryResponseSchema,
+  KnowledgeRootCreateResponseSchema,
+  KnowledgeRootListResponseSchema,
   LicenseInventoryResponseSchema,
+  LiveVoiceStatusSchema,
+  MemoryCreateResponseSchema,
+  MemoryListResponseSchema,
+  ReminderListResponseSchema,
+  SequencedDomainEventSchema,
   StorageLocationsResponseSchema,
+  TaskListResponseSchema,
   TurnResponseSchema,
+  VoiceDiagnosticsResponseSchema,
   type BrokerStatus,
+  type CurrencyExpenseSummary,
   type HardwareCapabilitiesResponse,
+  type KnowledgeQueryResponse,
+  type KnowledgeRootItem,
   type LicenseArtifact,
+  type LiveVoiceStatus,
+  type MemoryItem,
+  type ReminderItem,
+  type SequencedDomainEvent,
   type StorageLocation,
+  type TaskItem,
   type TurnResponse,
+  type VoiceDiagnosticsResponse,
 } from './contracts'
 
 function isTauriRuntime(): boolean {
@@ -183,18 +204,132 @@ export async function loadFoundationData(): Promise<FoundationBootstrapData> {
   }
 }
 
+export interface HydratedUserData {
+  readonly memories: ReadonlyArray<MemoryItem>
+  readonly reminders: ReadonlyArray<ReminderItem>
+  readonly tasks: ReadonlyArray<TaskItem>
+  readonly knowledgeRoots: ReadonlyArray<KnowledgeRootItem>
+  readonly expenseSummaries: ReadonlyArray<CurrencyExpenseSummary>
+}
+
+export async function loadHydratedUserData(): Promise<HydratedUserData | null> {
+  if (!isTauriRuntime()) return null
+  const [memRes, remRes, taskRes, rootRes, expRes] = await Promise.allSettled([
+    invoke('list_memories'),
+    invoke('list_reminders'),
+    invoke('list_tasks'),
+    invoke('list_knowledge_roots'),
+    invoke('get_expense_summary'),
+  ])
+
+  const memories =
+    memRes.status === 'fulfilled'
+      ? (MemoryListResponseSchema.safeParse(memRes.value).data?.memories ?? [])
+      : []
+  const reminders =
+    remRes.status === 'fulfilled'
+      ? (ReminderListResponseSchema.safeParse(remRes.value).data?.reminders ?? [])
+      : []
+  const tasks =
+    taskRes.status === 'fulfilled'
+      ? (TaskListResponseSchema.safeParse(taskRes.value).data?.tasks ?? [])
+      : []
+  const knowledgeRoots =
+    rootRes.status === 'fulfilled'
+      ? (KnowledgeRootListResponseSchema.safeParse(rootRes.value).data?.roots ?? [])
+      : []
+  const expenseSummaries =
+    expRes.status === 'fulfilled'
+      ? (ExpenseSummaryListResponseSchema.safeParse(expRes.value).data?.currencies ?? [])
+      : []
+
+  return { memories, reminders, tasks, knowledgeRoots, expenseSummaries }
+}
+
+export async function subscribeToBrokerEvents(
+  onEvent: (event: SequencedDomainEvent) => void,
+  afterSeq = 0,
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return () => {}
+  }
+
+  let unlisten: (() => void) | null = null
+  try {
+    unlisten = await listen<unknown>('jarvis:event', (tauriEvent) => {
+      const parsed = SequencedDomainEventSchema.safeParse(tauriEvent.payload)
+      if (parsed.success) {
+        onEvent(parsed.data)
+      }
+    })
+  } catch {
+    unlisten = null
+  }
+
+  try {
+    const rawCatchup: unknown = await invoke('poll_events_since', { afterSeq })
+    if (Array.isArray(rawCatchup)) {
+      for (const item of rawCatchup) {
+        const parsed = SequencedDomainEventSchema.safeParse(item)
+        if (parsed.success) {
+          onEvent(parsed.data)
+        }
+      }
+    }
+  } catch {
+    // Live bridge will continue emitting as Core comes online
+  }
+
+  return () => {
+    if (unlisten) {
+      unlisten()
+    }
+  }
+}
+
+export async function cancelBrokerActiveRequest(requestId?: string | null): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    await invoke('cancel_active_request', { requestId: requestId ?? null })
+  } catch {
+    // Best-effort cancel
+  }
+}
+
 export async function persistMemoryCreate(input: {
   readonly kind: string
   readonly content: string
   readonly sensitivity: string
-}): Promise<void> {
-  if (!isTauriRuntime()) return
-  await invoke('create_memory', input)
+}): Promise<MemoryItem | null> {
+  if (!isTauriRuntime()) return null
+  const raw: unknown = await invoke('create_memory', input)
+  const parsed = MemoryCreateResponseSchema.safeParse(raw)
+  return parsed.success ? parsed.data.memory : null
 }
 
 export async function persistMemoryDelete(memoryId: string): Promise<void> {
   if (!isTauriRuntime()) return
   await invoke('delete_memory', { memoryId })
+}
+
+export async function persistKnowledgeRootAdd(path: string): Promise<KnowledgeRootItem | null> {
+  if (!isTauriRuntime()) return null
+  const raw: unknown = await invoke('add_knowledge_root', { path })
+  const parsed = KnowledgeRootCreateResponseSchema.safeParse(raw)
+  return parsed.success ? parsed.data.root : null
+}
+
+export async function persistKnowledgeRootRevoke(rootId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false
+  await invoke('revoke_knowledge_root', { rootId })
+  return true
+}
+
+export async function queryKnowledgeLive(query: string): Promise<KnowledgeQueryResponse | null> {
+  if (!isTauriRuntime()) return null
+  const raw: unknown = await invoke('query_knowledge', { query })
+  const parsed = KnowledgeQueryResponseSchema.safeParse(raw)
+  return parsed.success ? parsed.data : null
 }
 
 export async function persistReminderCreate(input: {
@@ -251,6 +386,91 @@ export async function persistOnboardingCompletion(
   for (const capability of grantedCapabilities) {
     await invoke('upsert_grant', { capability })
   }
+}
+
+export async function fetchLiveVoiceStatus(): Promise<LiveVoiceStatus | null> {
+  if (!isTauriRuntime()) return null
+  try {
+    const raw: unknown = await invoke('get_live_voice_status')
+    return LiveVoiceStatusSchema.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+export async function armLiveVoiceMode(
+  mode: 'muted' | 'wake' | 'active' | 'ptt',
+): Promise<LiveVoiceStatus | null> {
+  if (!isTauriRuntime()) return null
+  try {
+    // G1 / IR-07: Arming the microphone MUST NEVER silently expand capabilities (e.g., screen.read).
+    const raw: unknown = await invoke('arm_live_voice', { mode })
+    return LiveVoiceStatusSchema.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+export async function stopLiveSpeakingAudio(): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    await invoke('stop_live_speaking')
+  } catch {
+    // Ignore if already stopped
+  }
+}
+
+export async function fetchVoiceDiagnostics(): Promise<VoiceDiagnosticsResponse | null> {
+  if (!isTauriRuntime()) return null
+  try {
+    const raw: unknown = await invoke('get_voice_diagnostics')
+    const parsed = VoiceDiagnosticsResponseSchema.safeParse(raw)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
+export async function selectBrokerAudioDevices(input: {
+  readonly inputDeviceId: string | null
+  readonly outputDeviceId: string | null
+}): Promise<boolean> {
+  if (!isTauriRuntime()) return false
+  try {
+    await invoke('select_audio_devices', {
+      inputDeviceId: input.inputDeviceId,
+      outputDeviceId: input.outputDeviceId,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function setBrokerSpeechRate(speechRate: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false
+  try {
+    await invoke('set_speech_rate', { speechRate })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function replayVoiceTranscript(
+  transcript: string,
+  sessionId = 'local-voice-session',
+  speakReply = false,
+): Promise<TurnResponse | null> {
+  if (!isTauriRuntime()) {
+    return dispatchCommandTurn(transcript, sessionId)
+  }
+  const raw: unknown = await invoke('replay_voice_transcript', {
+    transcript,
+    sessionId,
+    speakReply,
+  })
+  return TurnResponseSchema.parse(raw)
 }
 
 export async function dispatchApprovalDecision(payload: {

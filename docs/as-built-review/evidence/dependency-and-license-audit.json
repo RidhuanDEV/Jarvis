@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "audit_target": "J.A.R.V.I.S. v0.2.1",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "source_document": "docs/as-built-review/17-DEPENDENCY-AND-LICENSE-REVIEW.md",
+  "sbom_component_counts": {
+    "total": 825,
+    "python_pypi_uv_lock": 104,
+    "javascript_npm_package_lock": 228,
+    "rust_crates_cargo_lock": 476,
+    "baseline_platform_entries": 17
+  },
+  "runtime_toolchains": {
+    "python": "3.11.9",
+    "node": "24.22.1",
+    "rust": "1.99.0 (edition 2021)",
+    "tauri": "2.12.7"
+  },
+  "critical_license_findings": [
+    {
+      "id": "LIC-01",
+      "severity": "CRITICAL",
+      "package": "av==18.1.1 (transitive via faster-whisper==1.2.1 in [voice] extra)",
+      "declared_in_code": "MIT (license_service.py:153-161 lists faster-whisper as MIT only)",
+      "actual_observed_license": "GPL-3.0-or-later (bundles libx264-165, libx265-02, avcodec-62 compiled with --enable-version3 --enable-libx265 --enable-libx264; 73.50 MiB in av.libs/)",
+      "redistribution_impact": "Requires GPLv3 compliance if bundled in public releases OR removing PyAV dependency when passing in-memory NumPy PCM arrays."
+    },
+    {
+      "id": "LIC-02",
+      "severity": "HIGH",
+      "package": "piper-tts==1.8.0 ([tts-piper] extra) + id_ID-news_tts-medium voice model",
+      "declared_in_code": "GPL-3.0-or-later (isolated in [tts-piper])",
+      "actual_observed_license": "GPL-3.0-or-later (bundled espeak-ng) + upstream voice MODEL_CARD cites non-standard 'License: See URL' (Kaggle news corpus)",
+      "redistribution_impact": "Cannot bundle id_ID-news_tts-medium in public installers without copyright clearance; must remain opt-in user download with disclosure."
+    },
+    {
+      "id": "LIC-03",
+      "severity": "HIGH",
+      "package": "openwakeword==0.6.0 + hey_jarvis_v0.1.onnx",
+      "declared_in_code": "Apache-2.0 (Python code)",
+      "actual_observed_license": "hey_jarvis_v0.1.onnx model card noted as CC-BY-NC-SA 4.0 (Non-Commercial + ShareAlike) in R0-FEASIBILITY-REPORT.md",
+      "redistribution_impact": "Incompatible with commercial redistribution if bundled; must remain opt-in user download with accurate non-commercial notice."
+    }
+  ]
+}

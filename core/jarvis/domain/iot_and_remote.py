@@ -260,6 +260,49 @@ class SlidingWindowRateLimiter:
         self._buckets.pop(key, None)
 
 
+class RemoteReplayGuard:
+    """Deterministic anti-replay nonce & timestamp-skew guard for Remote Gateway requests (Stage G7, NFR-11)."""
+
+    def __init__(self, *, max_skew_seconds: float = 60.0, max_tracked_nonces: int = 2048) -> None:
+        self._max_skew = max(5.0, max_skew_seconds)
+        self._max_tracked = max(64, max_tracked_nonces)
+        self._seen: dict[tuple[str, str], float] = {}
+
+    def verify_and_record(
+        self,
+        *,
+        device_id: str,
+        nonce: str,
+        timestamp_epoch_sec: float,
+        now_epoch_sec: float,
+    ) -> tuple[bool, str]:
+        clean_nonce = nonce.strip()
+        if len(clean_nonce) < 12 or len(clean_nonce) > 128:
+            return (False, "Remote request replay nonce must be 12..128 characters.")
+        if abs(now_epoch_sec - timestamp_epoch_sec) > self._max_skew:
+            return (False, f"Remote request timestamp outside +-{int(self._max_skew)}s replay window.")
+
+        # Evict expired nonces before lookup
+        cutoff = now_epoch_sec - (self._max_skew * 2.0)
+        expired_keys = [k for k, ts in self._seen.items() if ts < cutoff]
+        for k in expired_keys:
+            self._seen.pop(k, None)
+
+        composite = (device_id, clean_nonce)
+        if composite in self._seen:
+            return (False, "Replayed remote request nonce rejected (NFR-11).")
+
+        if len(self._seen) >= self._max_tracked:
+            oldest_key = min(self._seen, key=lambda item: self._seen[item])
+            self._seen.pop(oldest_key, None)
+        self._seen[composite] = now_epoch_sec
+        return (True, "Fresh remote request nonce accepted.")
+
+    def clear_device(self, device_id: str) -> None:
+        for k in [key for key in self._seen if key[0] == device_id]:
+            self._seen.pop(k, None)
+
+
 # --- Adaptive Preference Proposal Guard (FR-REM-03, B20) ---
 
 # Strictly limited to non-privilege UX / persona preferences; NEVER permissions, policy, or trust zones!

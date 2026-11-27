@@ -106,6 +106,91 @@ class HomeAssistantService:
         self._db = db
         self._clock = clock
         self._client: HomeAssistantClientPort = client or OfflineHomeAssistantClient()
+        self._endpoint_url: str | None = None
+
+    def bind_client(
+        self,
+        client: HomeAssistantClientPort | None,
+        *,
+        endpoint_url: str | None = None,
+    ) -> None:
+        self._client = client or OfflineHomeAssistantClient()
+        self._endpoint_url = endpoint_url
+
+    def configure_connection(
+        self,
+        *,
+        client: HomeAssistantClientPort,
+        endpoint_url: str,
+        credential_vault_ref: str,
+        consent_acknowledged: bool,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        if not consent_acknowledged:
+            raise HomeAssistantError(
+                ErrorCode.APPROVAL_REQUIRED,
+                "Explicit owner consent is required before connecting Home Assistant LAN bridge (FR-IOT-02).",
+            )
+        now_iso = self._clock.now_utc().isoformat()
+        with self._db.core_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO ecosystem_connector(
+                    id, kind, display_name, endpoint_url, allowed_scopes_json, vault_ref,
+                    tls_fingerprint_sha256, consent_acknowledged, enabled, revoked_at, metadata_json, updated_at
+                ) VALUES ('home_assistant_lan', 'home_assistant', 'Home Assistant LAN Bridge', ?, '["iot.ha.allowlisted"]', ?, '', 1, 1, NULL, '{}', ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    endpoint_url = excluded.endpoint_url,
+                    vault_ref = excluded.vault_ref,
+                    consent_acknowledged = 1,
+                    enabled = 1,
+                    revoked_at = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (endpoint_url, credential_vault_ref, now_iso),
+            )
+            self._write_audit(
+                conn,
+                correlation_id=correlation_id,
+                event_type="iot.ha_bridge_configured",
+                outcome="completed",
+                meta={"endpoint_url": endpoint_url, "vault_ref": credential_vault_ref},
+                now_iso=now_iso,
+            )
+        self._client = client
+        self._endpoint_url = endpoint_url
+        return {
+            "connected": True,
+            "endpoint_url": endpoint_url,
+            "vault_ref": credential_vault_ref,
+            "consent_acknowledged": True,
+        }
+
+    def disconnect_connection(self, *, correlation_id: str) -> dict[str, object]:
+        now_iso = self._clock.now_utc().isoformat()
+        with self._db.core_tx() as conn:
+            conn.execute(
+                """
+                UPDATE ecosystem_connector
+                SET enabled = 0, consent_acknowledged = 0, revoked_at = ?, updated_at = ?
+                WHERE id = 'home_assistant_lan' AND kind = 'home_assistant'
+                """,
+                (now_iso, now_iso),
+            )
+            self._write_audit(
+                conn,
+                correlation_id=correlation_id,
+                event_type="iot.ha_bridge_disconnected",
+                outcome="completed",
+                meta={},
+                now_iso=now_iso,
+            )
+        self._client = OfflineHomeAssistantClient()
+        self._endpoint_url = None
+        return {"connected": False, "endpoint_url": None}
+
+    def is_live_client_configured(self) -> bool:
+        return not isinstance(self._client, OfflineHomeAssistantClient)
 
     def register_allowlisted_entity(
         self,

@@ -50,24 +50,61 @@ if (-not $Installer) {
 Write-Host "[2/3] Writing per-user portable runtime pointer under %LOCALAPPDATA%\JarvisOS\Jarvis\runtime-pointer.json..."
 $RuntimeCfgDir = Join-Path $env:LOCALAPPDATA "JarvisOS\Jarvis"
 New-Item -ItemType Directory -Force -Path $RuntimeCfgDir | Out-Null
+
+# Discover optional local AI runtimes & models (zero hardcoded paths; skip empty folders)
+$RuntimesDir = $null
+foreach ($cand in @(
+    (Join-Path $RuntimeCfgDir "runtimes"),
+    (Join-Path $env:LOCALAPPDATA "Jarvis-R0-Sandbox\runtimes")
+)) {
+    if ((Test-Path $cand) -and @(Get-ChildItem -Path $cand -ErrorAction SilentlyContinue).Count -gt 0) {
+        $RuntimesDir = $cand
+        break
+    }
+}
+$ModelsDir = $null
+foreach ($cand in @(
+    (Join-Path $RuntimeCfgDir "models"),
+    (Join-Path $env:LOCALAPPDATA "Jarvis-R0-Sandbox\models")
+)) {
+    if ((Test-Path $cand) -and @(Get-ChildItem -Path $cand -ErrorAction SilentlyContinue).Count -gt 0) {
+        $ModelsDir = $cand
+        break
+    }
+}
+
 $PointerObj = [ordered]@{
     schema_version = 1
     python_exe     = $CorePython
     core_dir       = $CoreDir
 }
+if ($RuntimesDir) { $PointerObj["runtimes_dir"] = $RuntimesDir }
+if ($ModelsDir) { $PointerObj["models_dir"] = $ModelsDir }
+
 $PointerPath = Join-Path $RuntimeCfgDir "runtime-pointer.json"
 $PointerJson = $PointerObj | ConvertTo-Json
 [System.IO.File]::WriteAllText($PointerPath, $PointerJson, [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "[3/3] Installing J.A.R.V.I.S. per-user (silent NSIS /S, zero admin): $($Installer.FullName)"
+# Stop any existing running JARVIS desktop instance before upgrading cleanly
+Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
+# Clean legacy trailing-dot install/shortcut if present from earlier 0.2.1 preview
+$LegacyUninst = Join-Path $env:LOCALAPPDATA "J.A.R.V.I.S\uninstall.exe"
+if (Test-Path $LegacyUninst) {
+    Start-Process -FilePath $LegacyUninst -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
+}
+$LegacyLnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\J.A.R.V.I.S..lnk"
+if (Test-Path $LegacyLnk) { Remove-Item -Force $LegacyLnk -ErrorAction SilentlyContinue }
+
+Write-Host "[3/3] Installing JARVIS per-user (silent NSIS /S, zero admin): $($Installer.FullName)"
 $proc = Start-Process -FilePath $Installer.FullName -ArgumentList "/S" -Wait -PassThru
 if ($proc.ExitCode -ne 0) {
     throw "NSIS installer exited with code $($proc.ExitCode)"
 }
 
-$InstalledExe = Join-Path $env:LOCALAPPDATA "J.A.R.V.I.S.\jarvis-desktop.exe"
+$InstalledExe = Join-Path $env:LOCALAPPDATA "JARVIS\jarvis-desktop.exe"
 if (-not (Test-Path $InstalledExe)) {
-    # Fallback search if NSIS chose productName subfolder variant
     $Found = Get-ChildItem -Path $env:LOCALAPPDATA -Filter "jarvis-desktop.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($Found) { $InstalledExe = $Found.FullName }
 }

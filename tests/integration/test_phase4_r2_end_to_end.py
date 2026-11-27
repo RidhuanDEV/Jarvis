@@ -363,13 +363,14 @@ def test_workflows_private_lan_extensions_and_phase4_fastapi_routes(tmp_path: Pa
         unapproved = client.post(f"/v1/workflows/{wf_id}/execute", headers=headers, json={})
         assert unapproved.status_code == 202
 
-        # Executing with valid bound_hash + simulated interruption at step 2 -> UNKNOWN without blind retry
-        unk_run = client.post(
+        # G1 / IR-03: Self-echoing dry-run bound_hash WITHOUT a verified single-use GUI approval_id MUST still be blocked (202)!
+        self_echo = client.post(
             f"/v1/workflows/{wf_id}/execute",
             headers=headers,
             json={"approved_bound_hash": dry["bound_hash"], "simulate_unknown_at_step": 2},
-        ).json()
-        assert unk_run["state"] == "unknown" and unk_run["needs_user_reconciliation"] is True
+        )
+        assert self_echo.status_code == 202
+        assert self_echo.json()["code"] == "APPROVAL_REQUIRED"
 
         # 3. Private LAN TLS opt-in & scope enforcement (FR-AIP-06, T17)
         fp = "a" * 64

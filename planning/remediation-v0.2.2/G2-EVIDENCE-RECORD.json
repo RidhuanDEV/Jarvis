@@ -1,0 +1,130 @@
+{
+  "schema_version": "1.0",
+  "stage": "G2",
+  "stage_name": "Runtime & Thin Vertical Slice (B07-B10)",
+  "recorded_at_utc": "2026-11-27T07:58:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "post_g2_dirty_diff_bytes": 359186,
+  "post_g2_dirty_diff_sha256": "8654939012243b6a63feb912761c27d88e5e7048a23764c7d2b2cf8a58c967e6",
+  "owner_gate_g0_decisions_preserved": {
+    "A1_stage_scope": "Executed Stage G2 (B07-B10) and paused at Gate G2 for owner verification",
+    "A2_file_move_policy": "fs.file.move remains disabled (ErrorCode.UNSUPPORTED) until Stage G4 Tier-2 GUI diff approval",
+    "A3_owner_privacy_ui_exception": "Preserved; no LLM/voice/MCP deletion capability introduced",
+    "A4_git_isolation": "Direct local working-tree patches; zero branch/commit/push mutations"
+  },
+  "measured_verification_summary": {
+    "pytest": {"passed": 164, "failed": 0, "duration_seconds": 27.9, "level": "VERIFIED_INTEGRATION"},
+    "vitest": {"passed": 19, "failed": 0, "files": 5, "level": "VERIFIED_UNIT"},
+    "tsc": {"exit_code": 0, "errors": 0},
+    "cargo_test": {"passed": 8, "failed": 0, "duration_seconds": 0.03, "level": "VERIFIED_UNIT"},
+    "ruff": {"exit_code": 0, "errors": 0},
+    "mypy": {"exit_code": 0, "checked_files": 68, "errors": 0},
+    "live_windows_host_readonly_probe": {
+      "catalog_apps_discovered": 149,
+      "tier3_binaries_leaked": 0,
+      "wasapi_master_volume_readback_percent": 65,
+      "wasapi_error": null,
+      "level": "VERIFIED_INTEGRATION"
+    },
+    "shadow_gate": {"passed": true, "blocking_violations": 0, "warnings": 0, "max_readiness": "VERIFIED-LOCAL"}
+  },
+  "work_items": [
+    {
+      "evidence_id": "EV-G2-B07",
+      "backlog_id": "B07",
+      "mapped_ids": ["IR-08", "IR-17", "DEF-08", "DEF-10", "NFR-01", "NFR-05", "NFR-15"],
+      "changed_files": [
+        "apps/desktop/src-tauri/src/process_supervisor.rs",
+        "apps/desktop/src-tauri/src/commands.rs",
+        "apps/desktop/src-tauri/src/lib.rs",
+        "core/jarvis/infrastructure/dual_db.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/integration/test_g2_runtime_apps_and_files.py::test_b07_fast_health_deep_integrity_and_non_destructive_cancel",
+        "apps/desktop/src-tauri/src/commands.rs::tests::accepts_valid_opaque_identifiers",
+        "apps/desktop/src-tauri/src/process_supervisor.rs::tests::managed_local_killed_within_5s_while_external_local_survives_untouched"
+      ],
+      "result": "PASS",
+      "residual_risk": "Hide-to-tray CloseRequested behavior and live WebView2 tray Quit teardown require installed Windows GUI E2E test (not measured in headless unit suite).",
+      "rollback": "Revert modified hunks in process_supervisor.rs, commands.rs, lib.rs, dual_db.py, and app.py."
+    },
+    {
+      "evidence_id": "EV-G2-B08",
+      "backlog_id": "B08",
+      "mapped_ids": ["IR-08", "IR-13", "IR-18", "DEF-18", "FR-UX-01", "FR-ADM-07"],
+      "changed_files": [
+        "apps/desktop/src/lib/contracts.ts",
+        "apps/desktop/src/lib/brokerClient.ts",
+        "apps/desktop/src/store/jarvisStore.ts",
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/components/ProductivityPanels.tsx",
+        "apps/desktop/src-tauri/src/lib.rs"
+      ],
+      "verification_level": "VERIFIED_UNIT",
+      "test_ids": [
+        "apps/desktop/src/__tests__/g2_bridge.test.tsx",
+        "apps/desktop/src/__tests__/foundation.test.tsx",
+        "apps/desktop/src/__tests__/phase3.test.tsx",
+        "apps/desktop/src/__tests__/phase4.test.tsx",
+        "apps/desktop/src/__tests__/phase5.test.tsx"
+      ],
+      "result": "PASS",
+      "residual_risk": "End-to-end Tauri WebView2 live IPC boot hydration & real-time SSE emission from spawned Python Core require installed desktop E2E smoke test.",
+      "rollback": "Revert modified hunks in contracts.ts, brokerClient.ts, jarvisStore.ts, App.tsx, ProductivityPanels.tsx, and lib.rs."
+    },
+    {
+      "evidence_id": "EV-G2-B09",
+      "backlog_id": "B09",
+      "mapped_ids": ["IR-09", "IR-16", "DEF-32", "FR-OS-01", "FR-OS-02", "FR-OS-05", "FR-COR-01", "DEC-012", "DEC-032"],
+      "changed_files": [
+        "core/jarvis/domain/app_catalog.py",
+        "core/jarvis/domain/ports.py",
+        "core/jarvis/domain/policy.py",
+        "core/jarvis/domain/router.py",
+        "core/jarvis/application/turn_orchestrator.py",
+        "core/jarvis/platform/windows/app_catalog.py",
+        "core/jarvis/platform/windows/desktop_automation.py",
+        "core/jarvis/platform/portable_mock.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/integration/test_g2_runtime_apps_and_files.py::test_b09_u_a01_bilingual_app_launch_punctuation_and_tier1_auto_allow",
+        "tests/integration/test_g2_runtime_apps_and_files.py::test_b09_u_a02_negation_meta_question_and_ambiguity_disambiguation",
+        "tests/integration/test_g2_runtime_apps_and_files.py::test_b09_tier3_lolbins_and_malicious_lnk_shortcuts_blocked_zero_bypass"
+      ],
+      "result": "PASS",
+      "residual_risk": "Live spawning of external GUI applications (allow_live_launch=True) and live WASAPI set_volume_percent mutation were intentionally kept non-mutating during automated tests to avoid disturbing host audio/windows; WASAPI readback (65%) and 149-app live Start Menu + App Paths catalog scan were verified read-only.",
+      "rollback": "Remove domain/app_catalog.py and platform/windows/app_catalog.py; revert policy.py, ports.py, router.py, desktop_automation.py, turn_orchestrator.py, portable_mock.py, and app.py."
+    },
+    {
+      "evidence_id": "EV-G2-B10",
+      "backlog_id": "B10",
+      "mapped_ids": ["IR-15", "FR-OS-03", "FR-OS-06", "FR-COR-05", "DEC-032", "NFR-16"],
+      "changed_files": [
+        "core/migrations/knowledge/0002_file_metadata_index.sql",
+        "core/jarvis/application/file_index_service.py",
+        "core/jarvis/platform/windows/file_opener.py",
+        "core/jarvis/infrastructure/dual_db.py",
+        "core/jarvis/application/turn_orchestrator.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/integration/test_g2_runtime_apps_and_files.py::test_b10_u_f01_scoped_metadata_index_exact_fuzzy_stale_junction_and_safe_open",
+        "tests/unit/test_nfr16_portability.py"
+      ],
+      "result": "PASS",
+      "residual_risk": "Live os.startfile invocation (allow_live_open=True) was verified via FakeFileOpenerAdapter in automated tests; continuous background filesystem watcher (USN Journal / watchdog) and Settings UI for guided folder selection remain planned for Stage G4/G5.",
+      "rollback": "Remove 0002_file_metadata_index.sql, file_index_service.py, and file_opener.py; revert dual_db.py, turn_orchestrator.py, and app.py."
+    }
+  ],
+  "untested_surfaces": [
+    "VERIFIED_INSTALLED_E2E: Full installed Tauri desktop .exe + WebView2 live IPC + tray hide/quit + real-time SSE cursor verification",
+    "Live host GUI process launch (allow_live_launch=True spawning real desktop apps) & live WASAPI set_volume_percent mutation",
+    "Live host os.startfile document viewer open (allow_live_open=True)",
+    "Live voice pipeline STT/VAD/TTS naturalness and wake-word latency (scheduled next in Stage G3 B11-B12)"
+  ]
+}

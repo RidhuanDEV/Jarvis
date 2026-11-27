@@ -1,0 +1,15 @@
+flowchart LR
+    Mic["Default Mic (16kHz f32)"] -->|"RAM queue"| OWW["openWakeWord 80ms / Silero VAD"]
+    OWW -->|"RAM PCM"| STT["faster-whisper-small (CPU int8, lang=id)"]
+    TextIn["Desktop Text Box"] -->|"POST /v1/requests"| Router["DeterministicRouter (10 regexes)"]
+    STT -->|"transcript"| Router
+    Router -->|"deterministic ToolProposal"| Policy["PolicyEngine + Grant Check"]
+    Router -->|"llm_candidate"| Orchestrator["TurnOrchestrator (RAM 12-msg history + OS clock; NO MemoryVault)"]
+    Orchestrator <-->|"SSE /v1/chat/completions"| Qwen["llama-server (Qwen3)"]
+    Qwen -->|"JSON ToolProposal"| Policy
+    Qwen -->|"prose sentences"| TtsQ["Sentence Queue -> PiperVoice (RAM BytesIO) -> sd.play"]
+    Policy -->|"R0/R1 ALLOWED"| Exec["Tool Adapters (app.launch mocked; RAG BM25-only; Screen title-only)"]
+    Policy -->|"R2 APPROVAL_REQUIRED"| AppDB[("approval table (60s TTL, nonce)")]
+    Policy -->|"R3 / DENIED"| Err["ErrorEnvelope / Spoken Refusal"]
+    Exec -->|"summary"| CoreDB[("jarvis_core.db / jarvis_knowledge.db")]
+    Exec -->|"reply"| TtsQ

@@ -1,0 +1,18 @@
+flowchart TD
+    In["Normalized Utterance"] --> Det{"DeterministicRouter matches regex?"}
+    Det -->|"Yes (0 LLM calls)"| ToolPath["ToolProposal -> PolicyEngine"]
+    Det -->|"No (llm_candidate)"| Prof{"Active Profile != DIRECT & adapter bound?"}
+    Prof -->|"No"| Direct["Static Direct Mode Notice (llm_called=false)"]
+    Prof -->|"Yes"| Ctx["Build Prompt: ID-first system + OS clock + RAM history (<=12 msgs; NO MemoryVault)"]
+    Ctx --> StreamCheck{"on_sentence != None & adapter has stream_complete?"}
+    StreamCheck -->|"Yes (Voice)"| SSE["LlamaCppServerAdapter.stream_complete (POST stream=true, strip think)"]
+    StreamCheck -->|"No (Text HTTP)"| Comp["adapter.complete (POST stream=false, 60s timeout; Rust cuts at 10s!)"]
+    SSE --> Lead{"First non-space char is '{' or '`'?"}
+    Lead -->|"No (Prose)"| Flush["Flush each sentence (. ! ? newline) -> Piper TTS Queue immediately"]
+    Lead -->|"Yes (JSON)"| Hold["Buffer full JSON without speaking"]
+    Flush --> Parse["parse_llm_assistant_or_tool(raw_content)"]
+    Hold --> Parse
+    Comp --> Parse
+    Parse -->|"Conversational reply"| SaveHist["Record in RAM deque(maxlen=12) + return COMPLETED"]
+    Parse -->|"Valid ToolProposal (1..5 steps)"| ToolPath
+    Parse -->|"Invalid schema"| Reject["Return FAILED (INVALID_ARGS)"]

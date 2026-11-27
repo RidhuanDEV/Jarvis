@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from jarvis.application.config_service import ConfigService
 from jarvis.domain.ai_models import SttProviderPort, SttResult, TtsProviderPort, TtsResult, TtsVoiceInfo
@@ -15,10 +15,31 @@ from jarvis.domain.voice import (
     BoundedAudioRingBuffer,
     EchoGuardDecision,
     EndpointAwareEchoGuard,
+    normalize_text_for_tts,
     split_sentences_for_streaming_tts,
 )
 from jarvis.infrastructure.dual_db import DualSqliteManager
 from jarvis.infrastructure.event_bus import SequencedEventBus
+
+
+class LiveVoiceRuntimeHook(Protocol):
+    """Port unifying VoicePipelineService configuration/lifecycle with the live audio runtime (B11, NFR-16)."""
+
+    def sync_audio_config(
+        self,
+        *,
+        input_device_name: str | None,
+        output_device_name: str | None,
+        output_endpoint: AudioEndpointInfo | None,
+        echo_guard_enabled: bool,
+        speech_rate: float,
+        primary_language: str,
+        multilingual_enabled: bool,
+    ) -> None: ...
+
+    def on_runtime_mode_changed(self, mode: Literal["muted", "ptt", "wake"]) -> None: ...
+
+    def stop_speaking(self) -> int | None: ...
 
 
 class VoiceServiceError(ValueError):
@@ -53,6 +74,7 @@ class VoicePipelineService:
         *,
         stt_provider: SttProviderPort | None = None,
         tts_providers: tuple[TtsProviderPort, ...] = (),
+        live_hook: LiveVoiceRuntimeHook | None = None,
     ) -> None:
         self._db = db
         self._config = config_service
@@ -61,10 +83,41 @@ class VoicePipelineService:
         self._bus = event_bus
         self._stt = stt_provider
         self._tts_providers = tts_providers
+        self._live_hook = live_hook
         self._ring_buffer = BoundedAudioRingBuffer()
         self._echo_guard = EndpointAwareEchoGuard()
         self._is_tts_playing = False
         self._ms_since_tts_ended: float | None = None
+
+    def bind_live_hook(self, hook: LiveVoiceRuntimeHook) -> None:
+        """Bind the unified live voice runtime and push current audio/locale configuration immediately."""
+        self._live_hook = hook
+        self._sync_live_runtime_config()
+
+    def _active_input_endpoint(self) -> AudioEndpointInfo | None:
+        cfg = self._config.get_active().document.audio
+        endpoints = self._audio.list_endpoints()
+        if cfg.input_device_id:
+            for ep in endpoints:
+                if ep.id == cfg.input_device_id and ep.direction == "input":
+                    return ep
+        return next((ep for ep in endpoints if ep.direction == "input" and ep.is_default), None)
+
+    def _sync_live_runtime_config(self) -> None:
+        if self._live_hook is None:
+            return
+        doc = self._config.get_active().document
+        in_ep = self._active_input_endpoint()
+        out_ep = self._active_output_endpoint()
+        self._live_hook.sync_audio_config(
+            input_device_name=in_ep.name if in_ep is not None else None,
+            output_device_name=out_ep.name if out_ep is not None else None,
+            output_endpoint=out_ep,
+            echo_guard_enabled=doc.audio.echo_guard_enabled,
+            speech_rate=doc.audio.speech_rate,
+            primary_language=doc.locale.primary_language,
+            multilingual_enabled=doc.locale.multilingual_enabled,
+        )
 
     def _active_output_endpoint(self) -> AudioEndpointInfo | None:
         cfg = self._config.get_active().document.audio
@@ -113,6 +166,9 @@ class VoicePipelineService:
         active = self._config.get_active().document
         updated = active.model_copy(update={"audio": active.audio.model_copy(update={"mode": mode})})
         self._config.save_revision(updated, source="user", correlation_id=correlation_id, actor=actor)
+        self._sync_live_runtime_config()
+        if self._live_hook is not None:
+            self._live_hook.on_runtime_mode_changed(mode)
         self._bus.publish(
             event_type="voice.state_changed",
             correlation_id=correlation_id,
@@ -147,6 +203,7 @@ class VoicePipelineService:
             }
         )
         self._config.save_revision(updated, source="user", correlation_id=correlation_id, actor=actor)
+        self._sync_live_runtime_config()
         self._bus.publish(
             event_type="audio.devices_changed",
             correlation_id=correlation_id,
@@ -186,6 +243,9 @@ class VoicePipelineService:
         """Immediately halt playback and wipe RAM audio pre-roll on OS lock/suspend (BR-13, BR-21)."""
         self._is_tts_playing = False
         self._ring_buffer.clear()
+        if self._live_hook is not None:
+            self._live_hook.stop_speaking()
+            self._live_hook.on_runtime_mode_changed("muted")
 
     def transcribe_buffer(self, *, language_hint: str | None = None) -> SttResult:
         if self._stt is None:
@@ -199,20 +259,25 @@ class VoicePipelineService:
         return self._stt.transcribe_pcm16(pcm, language_hint=lang)
 
     def synthesize_response(self, text: str, *, voice_id: str | None = None) -> list[TtsResult]:
-        """Synthesize short sentences using first available TTS engine with installed voices."""
-        sentences = split_sentences_for_streaming_tts(text)
+        """Synthesize short normalized sentences using first available working offline TTS engine (B12)."""
+        doc = self._config.get_active().document
+        normalized = normalize_text_for_tts(text, language=doc.locale.primary_language)
+        sentences = split_sentences_for_streaming_tts(normalized)
         if not sentences:
             return []
-        rate = self._config.get_active().document.audio.speech_rate
+        rate = doc.audio.speech_rate
         for provider in self._tts_providers:
             installed = [v for v in provider.list_installed_voices() if v.installed]
             if not installed:
                 continue
             chosen_voice = voice_id or installed[0].id
-            return [provider.synthesize(s, voice_id=chosen_voice, rate=rate) for s in sentences]
+            try:
+                return [provider.synthesize(s, voice_id=chosen_voice, rate=rate) for s in sentences]
+            except RuntimeError:
+                continue
         raise VoiceServiceError(
             ErrorCode.RUNTIME_UNAVAILABLE,
-            "No installed offline TTS voice pack detected on this device.",
+            "No active offline TTS synthesis engine is ready on this device.",
         )
 
     def run_self_test(self, *, correlation_id: str) -> dict[str, object]:

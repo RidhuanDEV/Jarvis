@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import html
+import ipaddress
 import re
 import socket
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -20,6 +22,7 @@ MAX_FETCH_BYTES = 2 * 1024 * 1024  # 2 MiB (11-INTEGRATION-DESIGN §3)
 DEFAULT_FETCH_TIMEOUT_SECONDS = 10.0
 DEFAULT_CACHE_TTL_SECONDS = 900  # 15 minutes
 MAX_REDIRECT_HOPS = 4
+MAX_CACHE_ENTRIES = 128
 
 _SCRIPT_STYLE_RE = re.compile(r"<(?:script|style|noscript)[^>]*>[\s\S]*?</(?:script|style|noscript)>", re.I)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -82,7 +85,31 @@ class SafeWebFetchClient:
         self._transport = transport
         self._cache_ttl = cache_ttl_seconds
         self._max_bytes = max_bytes
-        self._cache: dict[str, FetchedWebPage] = {}
+        self._cache: OrderedDict[str, FetchedWebPage] = OrderedDict()
+
+    @staticmethod
+    def _build_pinned_request_params(
+        url: str, pinned_ip: str, *, use_pinned_socket: bool
+    ) -> tuple[str, dict[str, str], dict[str, object]]:
+        """Pin real socket connections directly to validated IP with Host & TLS SNI preserved (IR-04)."""
+        headers: dict[str, str] = {"User-Agent": "JARVIS-Local-Reader/0.2.2"}
+        extensions: dict[str, object] = {}
+        if not use_pinned_socket:
+            return (url, headers, extensions)
+        parsed = urlparse(url)
+        orig_host = (parsed.hostname or "").strip()
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        headers["Host"] = orig_host if port == default_port else f"{orig_host}:{port}"
+        ip_obj = ipaddress.ip_address(pinned_ip.strip().strip("[]"))
+        ip_literal = f"[{ip_obj}]" if isinstance(ip_obj, ipaddress.IPv6Address) else str(ip_obj)
+        pinned_netloc = f"{ip_literal}:{port}"
+        pinned_url = urlunparse(
+            (parsed.scheme, pinned_netloc, parsed.path or "/", parsed.params, parsed.query, "")
+        )
+        if parsed.scheme.lower() == "https" and orig_host:
+            extensions["sni_hostname"] = orig_host.encode("ascii")
+        return (pinned_url, headers, extensions)
 
     def validate_and_resolve_url(self, raw_url: str, *, require_https: bool = False) -> str:
         """Validate URL syntax + resolve ALL DNS A/AAAA records and block ANY non-global IP (T05)."""
@@ -148,6 +175,9 @@ class SafeWebFetchClient:
 
         current_url = raw_url
         pinned_ip = self.validate_and_resolve_url(current_url, require_https=require_https)
+        use_pinned_socket = self._transport is None
+        status_code = 0
+        raw_chunks = bytearray()
 
         async with httpx.AsyncClient(
             transport=self._transport,
@@ -155,42 +185,61 @@ class SafeWebFetchClient:
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response: httpx.Response | None = None
             for _hop in range(MAX_REDIRECT_HOPS + 1):
-                response = await client.get(
-                    current_url, headers={"User-Agent": "JARVIS-Local-Reader/0.2.1"}
+                req_url, req_headers, req_extensions = self._build_pinned_request_params(
+                    current_url, pinned_ip, use_pinned_socket=use_pinned_socket
                 )
-                if response.status_code in (301, 302, 303, 307, 308):
-                    location = response.headers.get("location")
-                    if not location:
-                        raise WebFetchSecurityError(ErrorCode.DENIED, "Redirect missing Location header.")
-                    next_url = urljoin(current_url, location)
-                    # Re-validate EVERY redirect hop against full SSRF + DNS guard!
-                    pinned_ip = self.validate_and_resolve_url(next_url, require_https=require_https)
-                    current_url = next_url
-                    continue
-                break
+                async with client.stream(
+                    "GET", req_url, headers=req_headers, extensions=req_extensions
+                ) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            raise WebFetchSecurityError(ErrorCode.DENIED, "Redirect missing Location header.")
+                        next_url = urljoin(current_url, location)
+                        # Re-validate EVERY redirect hop against full SSRF + DNS guard!
+                        pinned_ip = self.validate_and_resolve_url(next_url, require_https=require_https)
+                        current_url = next_url
+                        continue
+
+                    status_code = response.status_code
+                    # Pre-check Content-Length if supplied, then enforce strict streaming byte cap (IR-04)
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > self._max_bytes:
+                                raise WebFetchSecurityError(
+                                    ErrorCode.INVALID_ARGS,
+                                    f"Response Content-Length ({content_length} bytes) exceeded {self._max_bytes} byte ceiling.",
+                                )
+                        except ValueError:
+                            pass
+
+                    raw_chunks.clear()
+                    async for chunk in response.aiter_bytes(chunk_size=16384):
+                        raw_chunks.extend(chunk)
+                        if len(raw_chunks) > self._max_bytes:
+                            raise WebFetchSecurityError(
+                                ErrorCode.INVALID_ARGS,
+                                f"Streaming response exceeded {self._max_bytes} byte ceiling; aborted.",
+                            )
+                    break
             else:
                 raise WebFetchSecurityError(ErrorCode.DENIED, "Too many HTTP redirects.")
-
-            assert response is not None
-            raw_bytes = response.content
-            if len(raw_bytes) > self._max_bytes:
-                raise WebFetchSecurityError(
-                    ErrorCode.INVALID_ARGS,
-                    f"Response size ({len(raw_bytes)} bytes) exceeded 2 MiB ceiling.",
-                )
 
         now = self._clock.now_utc()
         page = FetchedWebPage(
             url=current_url,
             pinned_ip=pinned_ip,
-            status_code=response.status_code,
-            text_excerpt=strip_active_html_to_text(raw_bytes.decode("utf-8", errors="replace")),
+            status_code=status_code,
+            text_excerpt=strip_active_html_to_text(bytes(raw_chunks).decode("utf-8", errors="replace")),
             fetched_at=now,
             expires_at=now + timedelta(seconds=self._cache_ttl),
             is_stale=False,
             from_cache=False,
         )
         self._cache[raw_url] = page
+        self._cache.move_to_end(raw_url)
+        while len(self._cache) > MAX_CACHE_ENTRIES:
+            self._cache.popitem(last=False)
         return page

@@ -5,7 +5,11 @@ use crate::process_supervisor::ProcessSupervisor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::State;
+
+const STANDARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const LONG_TURN_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct BrokerState {
     pub transport: Arc<dyn LocalIpcTransport>,
@@ -47,7 +51,36 @@ async fn forward_get(state: &BrokerState, path: &str) -> Result<Value, String> {
     let resp = state
         .http
         .get(&url)
+        .timeout(STANDARD_REQUEST_TIMEOUT)
         .header("Authorization", state.transport.bearer_header_value())
+        .send()
+        .await
+        .map_err(|e| format!("Core IPC unreachable: {e}"))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid JSON from Core ({status}): {e}"))?;
+    if !status.is_success() {
+        return Err(body.to_string());
+    }
+    Ok(body)
+}
+
+async fn forward_json_with_timeout(
+    state: &BrokerState,
+    method: reqwest::Method,
+    path: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let url = format!("{}{}", state.transport.base_url(), path);
+    let resp = state
+        .http
+        .request(method, &url)
+        .timeout(timeout)
+        .header("Authorization", state.transport.bearer_header_value())
+        .json(payload)
         .send()
         .await
         .map_err(|e| format!("Core IPC unreachable: {e}"))?;
@@ -68,24 +101,27 @@ async fn forward_json(
     path: &str,
     payload: &Value,
 ) -> Result<Value, String> {
-    let url = format!("{}{}", state.transport.base_url(), path);
-    let resp = state
-        .http
-        .request(method, &url)
-        .header("Authorization", state.transport.bearer_header_value())
-        .json(payload)
-        .send()
-        .await
-        .map_err(|e| format!("Core IPC unreachable: {e}"))?;
-    let status = resp.status();
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid JSON from Core ({status}): {e}"))?;
-    if !status.is_success() {
-        return Err(body.to_string());
+    forward_json_with_timeout(state, method, path, payload, STANDARD_REQUEST_TIMEOUT).await
+}
+
+/// Validate an opaque URL path segment before forwarding to Core (IR-08 / DEF-21).
+/// Rejects path traversal (`..`), slashes, percent-encoding, query/fragment delimiters, and whitespace.
+fn validate_path_segment<'a>(raw: &'a str, field_name: &str) -> Result<&'a str, String> {
+    if raw.is_empty() || raw.len() > 128 {
+        return Err(format!("Invalid {field_name}: must be 1..=128 characters."));
     }
-    Ok(body)
+    if raw.contains("..") {
+        return Err(format!("Invalid {field_name}: path traversal sequence rejected."));
+    }
+    if !raw
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "Invalid {field_name}: only ASCII alphanumeric, '-', '_', and '.' are allowed."
+        ));
+    }
+    Ok(raw)
 }
 
 #[tauri::command]
@@ -130,7 +166,8 @@ pub async fn set_storage_location(
     state: State<'_, BrokerState>,
     payload: SetStorageLocationPayload,
 ) -> Result<Value, String> {
-    let path = format!("/v1/storage/locations/{}", payload.category);
+    let category = validate_path_segment(&payload.category, "category")?;
+    let path = format!("/v1/storage/locations/{category}");
     let body = serde_json::json!({
         "path": payload.path,
         "quota_bytes": payload.quota_bytes,
@@ -148,7 +185,8 @@ pub async fn submit_approval_decision(
     state: State<'_, BrokerState>,
     payload: ApprovalDecisionPayload,
 ) -> Result<Value, String> {
-    let path = format!("/v1/approvals/{}/decision", payload.approval_id);
+    let approval_id = validate_path_segment(&payload.approval_id, "approval_id")?;
+    let path = format!("/v1/approvals/{approval_id}/decision");
     let body = serde_json::json!({
         "decision": payload.decision,
         "nonce": payload.nonce,
@@ -178,7 +216,100 @@ pub async fn submit_turn(
         "channel": "local",
         "modality": "trusted_ui"
     });
-    forward_json(&state, reqwest::Method::POST, "/v1/requests", &body).await
+    // B07 / DEF-08: LLM turns allow up to 90s instead of aborting at global 10s timeout
+    forward_json_with_timeout(
+        &state,
+        reqwest::Method::POST,
+        "/v1/requests",
+        &body,
+        LONG_TURN_REQUEST_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_active_request(
+    state: State<'_, BrokerState>,
+    request_id: Option<String>,
+) -> Result<Value, String> {
+    // B07: cancel in-flight turn/speech cleanly WITHOUT killing Python Core or destroying Job Object
+    let _ = forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/voice/stop-speaking",
+        &serde_json::json!({}),
+    )
+    .await;
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/requests/cancel",
+        &serde_json::json!({ "request_id": request_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn poll_events_since(
+    state: State<'_, BrokerState>,
+    after_seq: u64,
+) -> Result<Vec<Value>, String> {
+    let url = format!(
+        "{}/v1/events?after_seq={after_seq}&once=true",
+        state.transport.base_url()
+    );
+    let resp = state
+        .http
+        .get(&url)
+        .timeout(STANDARD_REQUEST_TIMEOUT)
+        .header("Authorization", state.transport.bearer_header_value())
+        .send()
+        .await
+        .map_err(|e| format!("Core SSE unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Invalid SSE text from Core ({status}): {e}"))?;
+    if !status.is_success() {
+        return Err(text);
+    }
+    let mut events = Vec::new();
+    for line in text.lines() {
+        if let Some(json_str) = line.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
+                if parsed.get("seq").is_some() {
+                    events.push(parsed);
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+#[tauri::command]
+pub async fn list_installed_apps(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/apps").await
+}
+
+#[tauri::command]
+pub async fn search_indexed_files(
+    state: State<'_, BrokerState>,
+    query: String,
+    ext: Option<String>,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/files/search",
+        &serde_json::json!({ "query": query, "ext": ext }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn get_core_stderr_logs(state: State<'_, BrokerState>) -> Vec<String> {
+    state.supervisor.recent_stderr_lines()
 }
 
 #[tauri::command]
@@ -187,6 +318,9 @@ pub async fn complete_onboarding_step(
     step: u8,
     mark_completed: bool,
 ) -> Result<Value, String> {
+    if !(1..=10).contains(&step) {
+        return Err(format!("Invalid onboarding step {step}: must be 1..=10."));
+    }
     let path = format!("/v1/onboarding/steps/{step}?mark_completed={mark_completed}");
     forward_json(&state, reqwest::Method::POST, &path, &serde_json::json!({})).await
 }
@@ -227,6 +361,91 @@ pub async fn set_audio_mode(state: State<'_, BrokerState>, mode: String) -> Resu
 }
 
 #[tauri::command]
+pub async fn get_live_voice_status(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/voice/live-status").await
+}
+
+#[tauri::command]
+pub async fn arm_live_voice(state: State<'_, BrokerState>, mode: String) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/voice/arm",
+        &serde_json::json!({ "mode": mode }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_live_speaking(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::POST,
+        "/v1/voice/stop-speaking",
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_voice_diagnostics(state: State<'_, BrokerState>) -> Result<Value, String> {
+    forward_get(&state, "/v1/voice/diagnostics").await
+}
+
+#[tauri::command]
+pub async fn select_audio_devices(
+    state: State<'_, BrokerState>,
+    input_device_id: Option<String>,
+    output_device_id: Option<String>,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::PUT,
+        "/v1/audio/devices",
+        &serde_json::json!({
+            "input_device_id": input_device_id,
+            "output_device_id": output_device_id
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_speech_rate(
+    state: State<'_, BrokerState>,
+    speech_rate: f64,
+) -> Result<Value, String> {
+    forward_json(
+        &state,
+        reqwest::Method::PUT,
+        "/v1/audio/speech-rate",
+        &serde_json::json!({ "speech_rate": speech_rate }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn replay_voice_transcript(
+    state: State<'_, BrokerState>,
+    transcript: String,
+    session_id: String,
+    speak_reply: bool,
+) -> Result<Value, String> {
+    forward_json_with_timeout(
+        &state,
+        reqwest::Method::POST,
+        "/v1/voice/replay-transcript",
+        &serde_json::json!({
+            "transcript": transcript,
+            "session_id": session_id,
+            "speak_reply": speak_reply
+        }),
+        LONG_TURN_REQUEST_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn list_memories(state: State<'_, BrokerState>) -> Result<Value, String> {
     forward_get(&state, "/v1/memories?include_proposals=true").await
 }
@@ -252,7 +471,8 @@ pub async fn delete_memory(
     state: State<'_, BrokerState>,
     memory_id: String,
 ) -> Result<Value, String> {
-    let path = format!("/v1/memories/{memory_id}");
+    let safe_id = validate_path_segment(&memory_id, "memory_id")?;
+    let path = format!("/v1/memories/{safe_id}");
     forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
 }
 
@@ -291,7 +511,8 @@ pub async fn activate_profile(
     state: State<'_, BrokerState>,
     profile_id: String,
 ) -> Result<Value, String> {
-    let path = format!("/v1/profiles/{profile_id}/activate");
+    let safe_id = validate_path_segment(&profile_id, "profile_id")?;
+    let path = format!("/v1/profiles/{safe_id}/activate");
     forward_json(&state, reqwest::Method::POST, &path, &serde_json::json!({})).await
 }
 
@@ -352,7 +573,8 @@ pub async fn revoke_remote_device(
     state: State<'_, BrokerState>,
     device_id: String,
 ) -> Result<Value, String> {
-    let path = format!("/v1/remote/devices/{device_id}");
+    let safe_id = validate_path_segment(&device_id, "device_id")?;
+    let path = format!("/v1/remote/devices/{safe_id}");
     forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
 }
 
@@ -368,7 +590,8 @@ pub async fn add_knowledge_root(state: State<'_, BrokerState>, path: String) -> 
 
 #[tauri::command]
 pub async fn revoke_knowledge_root(state: State<'_, BrokerState>, root_id: String) -> Result<Value, String> {
-    let path = format!("/v1/roots/{root_id}");
+    let safe_id = validate_path_segment(&root_id, "root_id")?;
+    let path = format!("/v1/roots/{safe_id}");
     forward_json(&state, reqwest::Method::DELETE, &path, &serde_json::json!({})).await
 }
 
@@ -424,7 +647,8 @@ pub async fn decide_preference_proposal(
     proposal_id: String,
     decision: String,
 ) -> Result<Value, String> {
-    let path = format!("/v1/preferences/proposals/{proposal_id}/decide");
+    let safe_id = validate_path_segment(&proposal_id, "proposal_id")?;
+    let path = format!("/v1/preferences/proposals/{safe_id}/decide");
     forward_json(
         &state,
         reqwest::Method::POST,
@@ -437,4 +661,35 @@ pub async fn decide_preference_proposal(
 #[tauri::command]
 pub fn emergency_stop_managed_workers(state: State<'_, BrokerState>) -> usize {
     state.supervisor.close_all_managed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_path_segment;
+
+    #[test]
+    fn accepts_valid_opaque_identifiers() {
+        assert!(validate_path_segment("core_db", "category").is_ok());
+        assert!(validate_path_segment("550e8400-e29b-41d4-a716-446655440000", "approval_id").is_ok());
+        assert!(validate_path_segment("balanced.v2", "profile_id").is_ok());
+    }
+
+    #[test]
+    fn rejects_path_traversal_and_url_injection() {
+        for bad in [
+            "",
+            "../grants",
+            "..\\grants",
+            "id/extra",
+            "id%2fextra",
+            "id?admin=true",
+            "id#frag",
+            "has space",
+        ] {
+            assert!(
+                validate_path_segment(bad, "test_id").is_err(),
+                "expected rejection for malicious segment: {bad:?}"
+            );
+        }
+    }
 }

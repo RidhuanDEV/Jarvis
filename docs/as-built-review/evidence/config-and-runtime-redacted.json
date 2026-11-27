@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "audit_target": "J.A.R.V.I.S. v0.2.1",
+  "redaction_policy": "All secrets, bearer tokens, DPAPI keys, personal usernames, and absolute local host paths replaced with placeholders.",
+  "core_http_server": {
+    "bind_host": "127.0.0.1",
+    "auth_scheme": "Bearer <REDACTED_EPHEMERAL_LOOPBACK_TOKEN>",
+    "desktop_automation_allow_live_launch": false,
+    "desktop_automation_source": "core/jarvis/transport/app.py:620",
+    "embedding_provider": null,
+    "web_search_provider": null,
+    "is_os_locked_hardcoded": false,
+    "is_os_locked_source": "core/jarvis/transport/app.py:1300"
+  },
+  "live_voice_engine": {
+    "source": "core/jarvis/infrastructure/live_voice_engine.py",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "dtype": "float32",
+    "blocksize_frames": 512,
+    "input_device": null,
+    "output_device": null,
+    "capture_queue_maxsize": 250,
+    "wake_model": "hey_jarvis_v0.1.onnx",
+    "wake_threshold": 0.5,
+    "vad_model": "silero_vad.onnx",
+    "vad_rms_min": 0.004,
+    "vad_prob_min": 0.42,
+    "vad_pre_roll_blocks": 10,
+    "vad_min_speech_blocks": 8,
+    "silence_end_seconds": 0.72,
+    "post_wake_follow_seconds": 0.58,
+    "echo_tail_seconds": 0.3,
+    "stt_model": "faster-whisper-small",
+    "stt_compute_type": "int8 (CPU, 4 threads)",
+    "stt_language_forced": "id",
+    "stt_vad_filter": false,
+    "stt_beam_size": 3,
+    "tts_engine": "piper-tts",
+    "tts_voice": "id_ID-news_tts-medium.onnx (espeak voice=id, 22050 Hz)",
+    "llm_http_timeout_seconds": 65,
+    "tts_timeout_seconds": 60
+  },
+  "desktop_automation_allowlist": {
+    "source": "core/jarvis/platform/windows/desktop_automation.py:13-17",
+    "apps": {
+      "calculator": "calc.exe",
+      "notepad": "notepad.exe",
+      "paint": "mspaint.exe"
+    },
+    "required_parent": "%SYSTEMROOT%\\System32"
+  },
+  "storage_and_database": {
+    "core_db_path": "%LOCALAPPDATA%\\Jarvis\\data\\jarvis_core.db",
+    "audit_db_path": "%LOCALAPPDATA%\\Jarvis\\data\\jarvis_audit.db",
+    "encryption_at_rest": "NONE (plaintext SQLite; SQLCipher not active)",
+    "rag_supported_extensions": [
+      ".txt",
+      ".md",
+      ".pdf",
+      ".docx"
+    ],
+    "rag_max_file_size_mib": 25,
+    "session_history_maxlen": 12
+  }
+}

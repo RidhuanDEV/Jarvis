@@ -1,0 +1,60 @@
+{
+  "record_type": "LIVE_RUNTIME_AND_UI_SMOKE",
+  "generated_at_utc": "2026-11-27T16:28:00Z",
+  "core_smoke": {
+    "port": 47199,
+    "token_handoff": "JARVIS_TOKEN_FROM_STDIN=1",
+    "all_passed": true,
+    "boot_seconds": 4.8,
+    "unauth_http_status": 401,
+    "hardware": {
+      "logical_cores": 12,
+      "ram_gib": 39.7,
+      "gpus": [
+        { "vendor": "nvidia", "vram_mib": 4096 },
+        { "vendor": "intel", "vram_mib": 128 }
+      ],
+      "support_tier": "Supported",
+      "recommended_ai_mode": "balanced"
+    },
+    "db_integrity": { "core_db_ok": true, "knowledge_db_ok": true, "sqlite_vec_loaded": true },
+    "voice_diagnostics": { "endpoints": 2, "output_form_factor": "speakers", "echo_guard_enabled": true },
+    "camera_discovery": { "device_count": 1, "backend_ready": false },
+    "app_catalog": { "discovered_app_count": 149, "latency_ms": 137.81 },
+    "turns": {
+      "bilingual_time_ms": 6.19,
+      "bilingual_time_route": "system.time",
+      "negation_guard_passed": true,
+      "r3_delete_refusal_http_status": 403,
+      "event_seq_after_turns": 4
+    },
+    "opt_in_defaults": { "mcp_servers": 0, "oauth_connectors": 0, "web_enabled": false, "remote_enabled": false, "license_artifacts_count": 27 },
+    "teardown_temp_cleaned": true
+  },
+  "baseline_playwright_ui_audit": {
+    "viewports_checked": ["1440x900", "768x1024", "375x812"],
+    "horizontal_overflow": false,
+    "page_errors": 0,
+    "console_errors": ["404 /favicon.ico (missing favicon link)"],
+    "visual_defects_identified": [
+      "Native <dialog> pinned top-left due to Tailwind v4 margin reset (missing margin: auto)",
+      "Flat canvas and cards without atmospheric depth or specular rim lighting",
+      "Bare-bones 3-circle OrbitalCore illustration lacking calibrated compass/particle/acoustic layers",
+      "12 ungrouped sidebar items and ~45% empty bottom void on 1440x900 Command Center"
+    ]
+  },
+  "post_redesign_playwright_ui_verification": {
+    "viewports_checked": ["1440x900", "768x1024", "375x812"],
+    "horizontal_overflow": false,
+    "page_errors": 0,
+    "console_errors": 0,
+    "r2_dialog_centered": true,
+    "r2_dialog_focus_first": "Tolak (Esc)",
+    "orbital_core_canvas_and_svg": true,
+    "orbital_core_zero_react_rerenders_per_frame": true,
+    "enabled_buttons_cursor_pointer": "24/24",
+    "wcag_aa_contrast_pairs_passed": "8/8 (6.21:1 to 16.18:1)",
+    "quick_command_chip_verified": true,
+    "leaked_ports_after_teardown": 0
+  }
+}

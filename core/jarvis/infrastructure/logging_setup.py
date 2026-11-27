@@ -11,14 +11,21 @@ import structlog
 from structlog.typing import EventDict, WrappedLogger
 
 SENSITIVE_KEY_RE = re.compile(
-    r"^(?:authorization|cookie|set[-_]?cookie|password|passwd|token|access[-_]?token|"
-    r"refresh[-_]?token|auth[-_]?token|secret|api[-_]?key|nonce|passphrase|"
-    r"recovery[-_]?phrase|nik|otp|credit[-_]?card|cvv|credential|dek|master[-_]?key)$",
+    r"(?:^|[-_])(?:authorization|cookie|password|passwd|token|secret|api[-_]?key|private[-_]?key|"
+    r"nonce|passphrase|recovery[-_]?phrase|pairing[-_]?code|nik|otp|credit[-_]?card|cvv|"
+    r"credential|dek|master[-_]?key)(?:$|[-_])",
     re.IGNORECASE,
 )
 
 BEARER_OR_JWT_RE = re.compile(
-    r"(?:Bearer\s+[A-Za-z0-9._\-~+/]+=*|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,})"
+    r"(?:Bearer\s+[A-Za-z0-9._\-~+/]+=*|"
+    r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}|"
+    r"\bsk-[A-Za-z0-9_\-]{16,}\b|"
+    r"\bghp_[A-Za-z0-9]{20,}\b|"
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b|"
+    r"\bAKIA[0-9A-Z]{16}\b|"
+    r"(?:passphrase|password|bearer_token|pairing_code|api_key|secret)\s*[:=]\s*['\"]?[^\s'\",;}{]+['\"]?)",
+    re.IGNORECASE,
 )
 
 CRLF_RE = re.compile(r"[\r\n]+")
@@ -35,7 +42,7 @@ def redact_value(value: Any) -> Any:
     if isinstance(value, str):
         return sanitize_log_string(value)
     if isinstance(value, dict):
-        return {str(k): ("[REDACTED]" if SENSITIVE_KEY_RE.match(str(k)) else redact_value(v)) for k, v in value.items()}
+        return {str(k): ("[REDACTED]" if SENSITIVE_KEY_RE.search(str(k)) else redact_value(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [redact_value(item) for item in value]
     if isinstance(value, tuple):
@@ -46,7 +53,7 @@ def redact_value(value: Any) -> Any:
 def _redact_and_sanitize_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
     sanitized: EventDict = {}
     for key, val in event_dict.items():
-        if SENSITIVE_KEY_RE.match(key):
+        if SENSITIVE_KEY_RE.search(key):
             sanitized[key] = "[REDACTED]"
         else:
             sanitized[key] = redact_value(val)
@@ -63,9 +70,10 @@ def configure_logging(level: str = "INFO", stream: TextIO | None = None) -> None
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True, key="ts"),
-            _redact_and_sanitize_processor,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            # DEF-23 / B05: redact AFTER stack/exception formatting so secrets in tracebacks are scrubbed too
+            _redact_and_sanitize_processor,
             structlog.processors.JSONRenderer(sort_keys=True),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),

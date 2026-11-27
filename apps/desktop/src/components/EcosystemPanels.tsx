@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { Camera, Home, Radio, ShieldBan, SlidersHorizontal, Smartphone, Square } from 'lucide-react'
+import { Camera, Globe, Home, Plug, Radio, ShieldBan, SlidersHorizontal, Smartphone, Square } from 'lucide-react'
 import type {
+  EcosystemConnectorItem,
   HaEntityItem,
+  McpServerItem,
   PreferenceProposalItem,
   RemoteDeviceItem,
 } from '../lib/contracts'
@@ -14,12 +16,18 @@ interface EcosystemPanelProps {
   readonly remoteDevices: ReadonlyArray<RemoteDeviceItem>
   readonly preferenceProposals: ReadonlyArray<PreferenceProposalItem>
   readonly activePersonaVerbosity: 'brief' | 'standard' | 'detailed'
+  readonly mcpServers?: ReadonlyArray<McpServerItem>
+  readonly ecosystemConnectors?: ReadonlyArray<EcosystemConnectorItem>
+  readonly offlineMode?: boolean
   readonly onSetCameraActive: (active: boolean) => void
   readonly onAddHaEntity: (entityId: string, friendlyName: string) => boolean
   readonly onToggleRemoteGateway: () => void
   readonly onToggleRemoteHostAvailable: () => void
   readonly onRevokeRemoteDevice: (deviceId: string) => void
   readonly onDecideProposal: (id: string, decision: 'approve' | 'reject') => void
+  readonly onToggleMcpServer?: (serverId: string, enabled: boolean) => void
+  readonly onTriggerMcpKillSwitch?: () => void
+  readonly onRevokeEcosystemConnector?: (connectorId: string) => void
 }
 
 export function EcosystemPanel({
@@ -30,12 +38,18 @@ export function EcosystemPanel({
   remoteDevices,
   preferenceProposals,
   activePersonaVerbosity,
+  mcpServers = [],
+  ecosystemConnectors = [],
+  offlineMode = true,
   onSetCameraActive,
   onAddHaEntity,
   onToggleRemoteGateway,
   onToggleRemoteHostAvailable,
   onRevokeRemoteDevice,
   onDecideProposal,
+  onToggleMcpServer,
+  onTriggerMcpKillSwitch,
+  onRevokeEcosystemConnector,
 }: EcosystemPanelProps) {
   const [entityId, setEntityId] = useState('')
   const [friendlyName, setFriendlyName] = useState('')
@@ -58,8 +72,7 @@ export function EcosystemPanel({
     <div className="space-y-5">
       {/* B17: On-Demand Camera Understanding */}
       <section
-        className="rounded-xl border p-5"
-        style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
+        className="jarvis-panel rounded-2xl p-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -104,8 +117,7 @@ export function EcosystemPanel({
 
       {/* B18: Home Assistant Allowlist & R3 Safety-Actuation Hard Ban */}
       <section
-        className="rounded-xl border p-5"
-        style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
+        className="jarvis-panel rounded-2xl p-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -178,8 +190,7 @@ export function EcosystemPanel({
 
       {/* B19: Separate Private Scoped Remote Mobile Gateway */}
       <section
-        className="rounded-xl border p-5"
-        style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
+        className="jarvis-panel rounded-2xl p-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -268,8 +279,7 @@ export function EcosystemPanel({
 
       {/* B20: Adaptive Preference Proposals */}
       <section
-        className="rounded-xl border p-5"
-        style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
+        className="jarvis-panel rounded-2xl p-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -331,6 +341,192 @@ export function EcosystemPanel({
             </li>
           ))}
         </ul>
+      </section>
+
+      {/* Stage G6 (B23): Opt-In Hardened MCP Manager & Global Kill Switch */}
+      <section
+        className="jarvis-panel rounded-2xl p-5"
+        aria-label="MCP Manager Opt-In Read-Only Pilot"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Plug className="h-4 w-4" style={{ color: 'var(--accent-core)' }} aria-hidden="true" />
+            <h2 className="text-base font-semibold">MCP Manager (Opt-In Read-Only Pilot · B23)</h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => onTriggerMcpKillSwitch?.()}
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors hover:brightness-110 active:scale-[0.99]"
+            style={{ backgroundColor: 'var(--status-danger-dim)', color: 'var(--status-danger)' }}
+          >
+            <Square className="h-3 w-3" aria-hidden="true" />
+            MCP Kill Switch
+          </button>
+        </div>
+
+        <p className="mt-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+          Default nonaktif. Setiap server MCP dipin SHA-256 skemanya, berjalan tanpa mewarisi token inti/env rahasia, otomatis dikarantina bila terjadi rug-pull, dan menandai sesi BR-15 (untrusted data).
+        </p>
+
+        {mcpServers.length === 0 ? (
+          <p
+            className="mt-3 rounded-lg border px-3 py-2 text-xs"
+            style={{
+              backgroundColor: 'var(--surface-canvas)',
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--text-muted)',
+            }}
+          >
+            Belum ada server MCP opt-in terdaftar. Fitur inti lokal berjalan langsung lewat native tools tanpa MCP.
+          </p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {mcpServers.map((srv) => (
+              <li
+                key={srv.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-xs"
+                style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-subtle)' }}
+              >
+                <div className="space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{srv.display_name}</span>
+                    <span className="font-mono-tabular" style={{ color: 'var(--text-muted)' }}>
+                      v{srv.version} · {srv.transport} · {srv.trust_tier}
+                    </span>
+                    <span
+                      className="font-mono-tabular rounded border px-1.5 py-0.5 text-[10px]"
+                      style={{
+                        borderColor: srv.quarantined
+                          ? 'var(--status-danger)'
+                          : srv.enabled
+                            ? 'var(--status-ok)'
+                            : 'var(--border-subtle)',
+                        color: srv.quarantined
+                          ? 'var(--status-danger)'
+                          : srv.enabled
+                            ? 'var(--status-ok)'
+                            : 'var(--text-muted)',
+                      }}
+                    >
+                      {srv.quarantined ? 'QUARANTINED' : srv.enabled ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </div>
+                  <div className="font-mono-tabular text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Tujuan data: {srv.data_destination} · Pin:{' '}
+                    {srv.schema_pin_sha256 ? `${srv.schema_pin_sha256.slice(0, 12)}…` : 'belum dipin'} · Tools:{' '}
+                    {srv.pinned_tools.length}
+                  </div>
+                  {srv.quarantined && srv.quarantine_reason && (
+                    <div role="alert" className="text-[11px]" style={{ color: 'var(--status-danger)' }}>
+                      Karantina: {srv.quarantine_reason}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={srv.quarantined}
+                  onClick={() => onToggleMcpServer?.(srv.id, !srv.enabled)}
+                  className="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-[#1c2c44] active:scale-[0.99] disabled:opacity-50"
+                  style={{ borderColor: 'var(--border-strong)', backgroundColor: 'var(--surface-elevated)' }}
+                >
+                  {srv.enabled ? 'Nonaktifkan' : 'Aktifkan'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Stage G7 (B26): Opt-In Ecosystem Capability Packs (Web Search, OAuth Read-Only Calendar/Mail, HA Bridge) */}
+      <section
+        className="jarvis-panel rounded-2xl p-5"
+        aria-label="Paket Konektor Ekosistem Opt-In"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4" style={{ color: 'var(--accent-core)' }} aria-hidden="true" />
+            <h2 className="text-base font-semibold">Konektor Ekosistem Opt-In (Web · OAuth PKCE · LAN · B26)</h2>
+          </div>
+          <span
+            data-testid="ecosystem-offline-badge"
+            className="font-mono-tabular rounded-md border px-2 py-0.5 text-xs"
+            style={{
+              borderColor: offlineMode ? 'var(--status-warn)' : 'var(--status-ok)',
+              color: offlineMode ? 'var(--status-warn)' : 'var(--status-ok)',
+            }}
+          >
+            {offlineMode ? 'OFFLINE DEGRADATION ACTIVE' : 'ONLINE · PER-CONNECTOR CONSENT'}
+          </span>
+        </div>
+
+        <p className="mt-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+          Setiap konektor (Web Search anti-SSRF, Kalender/Email OAuth PKCE read-only, Home Assistant LAN) nonaktif secara default, wajib persetujuan eksplisit per konektor, menyimpan token hanya di OS Credential Vault, dan otomatis menandai data eksternal BR-15.
+        </p>
+
+        {ecosystemConnectors.length === 0 ? (
+          <p
+            className="mt-3 rounded-lg border px-3 py-2 text-xs"
+            style={{
+              backgroundColor: 'var(--surface-canvas)',
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--text-muted)',
+            }}
+          >
+            Belum ada konektor eksternal opt-in yang diaktifkan. Mode lokal offline tetap bekerja penuh.
+          </p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {ecosystemConnectors.map((conn) => (
+              <li
+                key={conn.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-xs"
+                style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-subtle)' }}
+              >
+                <div className="space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{conn.display_name}</span>
+                    <span className="font-mono-tabular" style={{ color: 'var(--text-muted)' }}>
+                      {conn.kind}
+                    </span>
+                    <span
+                      className="font-mono-tabular rounded border px-1.5 py-0.5 text-[10px]"
+                      style={{
+                        borderColor: conn.revoked_at
+                          ? 'var(--status-danger)'
+                          : conn.enabled && conn.consent_acknowledged
+                            ? 'var(--status-ok)'
+                            : 'var(--border-subtle)',
+                        color: conn.revoked_at
+                          ? 'var(--status-danger)'
+                          : conn.enabled && conn.consent_acknowledged
+                            ? 'var(--status-ok)'
+                            : 'var(--text-muted)',
+                      }}
+                    >
+                      {conn.revoked_at
+                        ? 'REVOKED'
+                        : conn.enabled && conn.consent_acknowledged
+                          ? 'CONSENTED · READ-ONLY'
+                          : 'DISABLED'}
+                    </span>
+                  </div>
+                  <div className="font-mono-tabular text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Endpoint: {conn.endpoint_url} · Scopes: {conn.allowed_scopes.join(', ')}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(conn.revoked_at) || !conn.enabled}
+                  onClick={() => onRevokeEcosystemConnector?.(conn.id)}
+                  className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold transition-colors hover:brightness-110 active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ backgroundColor: 'var(--status-danger-dim)', color: 'var(--status-danger)' }}
+                >
+                  Cabut Konektor
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   )

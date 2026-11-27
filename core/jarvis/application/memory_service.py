@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -185,6 +186,100 @@ class MemoryVaultService:
                 continue
             items.append(rec)
         return items
+
+    def retrieve_relevant_memories(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        include_sensitive: bool = False,
+    ) -> list[MemoryRecord]:
+        """Bounded top-k retrieval of active non-expired memories without decrypting unrelated sensitive rows (B13)."""
+        now = self._clock.now_utc()
+        with self._db.core_read() as conn:
+            if include_sensitive:
+                rows = conn.execute(
+                    "SELECT * FROM memory WHERE status = 'active' ORDER BY updated_at DESC LIMIT 200"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM memory WHERE status = 'active' AND is_encrypted = 0 ORDER BY updated_at DESC LIMIT 200"
+                ).fetchall()
+
+        q_tokens = set(re.findall(r"[a-z0-9]{2,}", query.casefold()))
+        scored: list[tuple[float, datetime, MemoryRecord]] = []
+        for row in rows:
+            rec = self._hydrate_row(row)
+            if rec.expires_at is not None and rec.expires_at <= now:
+                continue
+            content_tokens = set(re.findall(r"[a-z0-9]{2,}", rec.content.casefold()))
+            overlap = len(q_tokens & content_tokens) / max(1, len(q_tokens)) if q_tokens else 0.0
+            kind_bonus = 0.25 if rec.kind in ("preference", "instruction") else 0.0
+            score = overlap + kind_bonus
+            # Always include confirmed preferences/instructions even on general turns; facts require lexical relevance
+            if score >= 0.20 or rec.kind in ("preference", "instruction"):
+                scored.append((score, rec.updated_at, rec))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[: max(1, min(limit, 15))]]
+
+    def upsert_user_alias(
+        self,
+        alias: str,
+        canonical_target: str,
+        *,
+        correlation_id: str,
+        actor: str = "local_owner",
+    ) -> MemoryRecord:
+        """Persist an explicit non-parametric user app/entity alias mapping (B13)."""
+        norm_alias = alias.strip().casefold()
+        target = canonical_target.strip()
+        if not norm_alias or not target:
+            raise MemoryServiceError(ErrorCode.INVALID_ARGS, "Alias and target cannot be empty.")
+        payload = f"ALIAS:{norm_alias}={target}"
+        prefix = f"alias:{norm_alias}="
+        with self._db.core_read() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, revision, content FROM memory
+                WHERE status = 'active' AND kind = 'preference' AND is_encrypted = 0 AND content LIKE 'ALIAS:%'
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+        for row in rows:
+            if str(row["content"]).casefold().startswith(prefix):
+                return self.update_memory(
+                    str(row["id"]),
+                    expected_revision=int(row["revision"]),
+                    new_content=payload,
+                    change_reason="owner_alias_correction",
+                    correlation_id=correlation_id,
+                    actor=actor,
+                )
+        return self.create_memory(
+            kind="preference",
+            content=payload,
+            sensitivity="normal",
+            source_ref="owner_alias_correction",
+            status="active",
+            correlation_id=correlation_id,
+            actor=actor,
+        )
+
+    def get_user_app_aliases(self) -> dict[str, str]:
+        """Return confirmed user-defined app aliases without decrypting sensitive rows (B13)."""
+        aliases: dict[str, str] = {}
+        with self._db.core_read() as conn:
+            rows = conn.execute(
+                "SELECT content FROM memory WHERE status = 'active' AND kind = 'preference' AND is_encrypted = 0 AND content LIKE 'ALIAS:%' ORDER BY updated_at ASC"
+            ).fetchall()
+        for r in rows:
+            raw = str(r["content"])
+            if "=" in raw[6:]:
+                k, v = raw[6:].split("=", 1)
+                if k.strip() and v.strip():
+                    aliases[k.strip().casefold()] = v.strip()
+        return aliases
 
     def approve_proposal(
         self,

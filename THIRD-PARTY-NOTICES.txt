@@ -1,0 +1,36 @@
+J.A.R.V.I.S. — THIRD-PARTY SOFTWARE, MODEL & ASSET NOTICES
+==========================================================
+Generated for v0.2.2 baseline compliance (DEC-022, FR-SYS-05, B24).
+Live runtime SBOM & notices are also exported via GET /v1/licenses/sbom and GET /v1/licenses/notices.
+
+[app_package] argon2-cffi (25.1.0) — MIT — https://github.com/hynek/argon2-cffi
+[app_package] FastAPI (0.165.0) — MIT — https://github.com/fastapi/fastapi
+[app_package] HTTPX (0.28.1) — BSD-3-Clause — https://github.com/encode/httpx
+[app_package] keyring (25.7.0) — MIT — https://github.com/jaraco/keyring
+[app_package] NumPy (2.2.6) — BSD-3-Clause (bundles OpenBLAS BSD-3-Clause) — https://github.com/numpy/numpy
+[app_package] psutil (7.2.2) — BSD-3-Clause — https://github.com/giampaolo/psutil
+[app_package] pyca/cryptography (50.0.2) — Apache-2.0 OR BSD-3-Clause — https://github.com/pyca/cryptography
+[app_package] Pydantic (2.14.4) — MIT — https://github.com/pydantic/pydantic
+[app_package] pypdf (7.1.1) — BSD-3-Clause — https://github.com/py-pdf/pypdf
+[app_package] python-docx (1.2.0) — MIT — https://github.com/python-openxml/python-docx
+[app_package] python-sounddevice (0.5.6) — MIT — https://github.com/spatialaudio/python-sounddevice
+[app_package] React (19.x) — MIT — https://github.com/facebook/react
+[app_package] structlog (26.1.0) — Apache-2.0 OR MIT — https://github.com/hynek/structlog
+[app_package] Tauri (2.x) — Apache-2.0 OR MIT — https://github.com/tauri-apps/tauri
+[app_package] Uvicorn (0.54.0) — BSD-3-Clause — https://github.com/encode/uvicorn
+
+[native_library] CTranslate2 (4.9.1) — MIT — https://github.com/OpenNMT/CTranslate2
+[native_library] ONNX Runtime (1.32.0) — MIT — https://github.com/microsoft/onnxruntime
+[native_library] PyAV (av 18.1.1) + Bundled FFmpeg — GPL-3.0-or-later (optional [voice] extra ONLY; omitted from base build) — https://github.com/PyAV-Org/PyAV
+[native_library] pypdfium2 / PDFium (5.15.2) — Apache-2.0 / BSD-3-Clause — https://github.com/pypdfium2-team/pypdfium2
+[native_library] sqlite-vec (0.1.9) — Apache-2.0 / MIT — https://github.com/asg017/sqlite-vec
+
+[ai_runtime] llama.cpp (Optional Managed/External Reference Adapter) — MIT — https://github.com/ggml-org/llama.cpp
+
+[voice_asset] faster-whisper (1.2.1, Optional Offline STT) — MIT — https://github.com/SYSTRAN/faster-whisper
+[voice_asset] OHF-Voice piper1-gpl (1.8.0, Optional [tts-piper] extra ONLY) — GPL-3.0-or-later — https://github.com/OHF-Voice/piper1-gpl
+[voice_asset] openWakeWord + hey_jarvis ONNX (0.6.0, Optional Wake Word) — Apache-2.0 — https://github.com/dscripka/openWakeWord
+[voice_asset] Windows OneCore OS Speech Voices — Proprietary-Windows-OS (Host OS component; NOT redistributed)
+
+[font] JetBrains Mono & Inter — OFL-1.1 — https://www.jetbrains.com/lp/mono/
+[icon_set] Lucide Icons — ISC — https://github.com/lucide-icons/lucide

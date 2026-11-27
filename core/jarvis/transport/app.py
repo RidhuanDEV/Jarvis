@@ -16,6 +16,7 @@ from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,12 +34,15 @@ from jarvis.application.config_service import (
     build_default_config,
     build_default_storage_roots,
 )
+from jarvis.application.context_service import ContextAssemblerService
 from jarvis.application.ecosystem_service import (
     EcosystemGovernanceService,
     EcosystemServiceError,
     ExtensionManifest,
     PrivateLanProviderRegistration,
 )
+from jarvis.application.file_index_service import FileIndexError, FileIndexService
+from jarvis.application.file_mutation_service import FileMutationError, FileMutationService
 from jarvis.application.home_assistant_service import (
     HomeAssistantClientPort,
     HomeAssistantError,
@@ -46,7 +50,12 @@ from jarvis.application.home_assistant_service import (
 )
 from jarvis.application.knowledge_service import KnowledgeRagService, KnowledgeServiceError
 from jarvis.application.license_service import LicenseInventoryService
+from jarvis.application.mcp_host_service import McpHostError, McpHostService
 from jarvis.application.memory_service import MemoryServiceError, MemoryVaultService
+from jarvis.application.oauth_connector_service import (
+    OAuthConnectorError,
+    OAuthReadOnlyConnectorService,
+)
 from jarvis.application.personal_life_service import PersonalLifeError, PersonalLifeService
 from jarvis.application.preference_proposal_service import (
     PreferenceProposalError,
@@ -54,6 +63,7 @@ from jarvis.application.preference_proposal_service import (
 )
 from jarvis.application.reminder_service import ReminderSchedulerService, ReminderServiceError
 from jarvis.application.remote_gateway_service import RemoteGatewayError, RemoteGatewayService
+from jarvis.application.scheduler_runner import BackgroundSchedulerRunner
 from jarvis.application.screen_service import ScreenAwarenessError, ScreenAwarenessService
 from jarvis.application.storage_service import StorageService, StorageServiceError
 from jarvis.application.turn_orchestrator import TurnOrchestratorService
@@ -66,6 +76,7 @@ from jarvis.application.workflow_service import (
 )
 from jarvis.domain.ai_models import ModelManifestRecord, ModelProviderRecord
 from jarvis.domain.licensing import LicenseValidationError
+from jarvis.domain.mcp import McpServerRegistration
 from jarvis.domain.models import (
     ActionOutcomeState,
     ApprovalDecisionRequest,
@@ -83,9 +94,11 @@ from jarvis.domain.models import (
 )
 from jarvis.domain.policy import PolicyEngine
 from jarvis.domain.ports import (
+    ApplicationCatalogPort,
     AudioDevicePort,
     ClockPort,
     DesktopAutomationPort,
+    FileOpenerPort,
     FilesystemSafetyPort,
     HardwareDiscoveryPort,
     LocalIpcTransportPort,
@@ -93,25 +106,58 @@ from jarvis.domain.ports import (
     ProcessSupervisorPort,
     SecretVaultAndCryptoPort,
 )
-from jarvis.domain.recommendations import recommend_configuration
+from jarvis.domain.recommendations import DynamicResourceGovernor, recommend_configuration
 from jarvis.infrastructure.dual_db import DualSqliteManager
 from jarvis.infrastructure.event_bus import SequencedEventBus
+from jarvis.infrastructure.home_assistant_client import PrivateLanHomeAssistantClient
+from jarvis.infrastructure.live_voice_engine import LiveVoiceEngine, VoiceMode
 from jarvis.infrastructure.logging_setup import configure_logging, get_logger
+from jarvis.infrastructure.mcp_stdio_transport import McpStdioTransport
+from jarvis.infrastructure.provenance import ArtifactProvenanceVerifier
+from jarvis.infrastructure.providers.local_runtime_manager import LocalLlmRuntimeManager
 from jarvis.infrastructure.web_fetch import SafeWebFetchClient
-from jarvis.platform.portable_mock import FakeNotificationAdapter, SystemClock, TokenIpcTransport
+from jarvis.infrastructure.web_search_provider import SearxngWebSearchProvider
+from jarvis.platform.portable_mock import (
+    FakeNotificationAdapter,
+    SystemClock,
+    TokenIpcTransport,
+    UnavailableNotificationAdapter,
+)
+from jarvis.platform.windows.app_catalog import WindowsApplicationCatalogAdapter
 from jarvis.platform.windows.audio import (
     WindowsAudioDeviceAdapter,
     WindowsOneCoreVoiceProbeAdapter,
 )
+from jarvis.platform.windows.camera import WindowsOnDemandCameraAdapter
 from jarvis.platform.windows.desktop_automation import WindowsDesktopAutomationAdapter
+from jarvis.platform.windows.file_opener import WindowsFileOpenerAdapter
 from jarvis.platform.windows.filesystem import WindowsFilesystemSafetyAdapter
 from jarvis.platform.windows.hardware import WindowsHardwareDiscoveryAdapter
+from jarvis.platform.windows.notifications import WindowsToastNotificationAdapter
+from jarvis.platform.windows.screen_capture import WindowsActiveWindowCaptureAdapter
+from jarvis.platform.windows.session_lock import is_windows_workstation_locked
 from jarvis.platform.windows.supervisor import WindowsJobProcessSupervisor
 from jarvis.platform.windows.vault import WindowsVaultAndCryptoAdapter
 from jarvis.transport.settings import CoreStartupSettings
 
 MAX_PAYLOAD_BYTES = 256 * 1024
 ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "testserver"})
+
+
+def _extract_host_without_port(raw_host_header: str) -> str:
+    """Parse HTTP Host header safely for IPv4, hostname, and bracketed IPv6 ([::1]:port) (DEF-22)."""
+    cleaned = raw_host_header.strip().lower()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("["):
+        end_bracket = cleaned.find("]")
+        if end_bracket == -1:
+            return ""
+        rest = cleaned[end_bracket + 1 :]
+        if rest and not rest.startswith(":"):
+            return ""
+        return cleaned[: end_bracket + 1]
+    return cleaned.split(":", 1)[0]
 
 
 def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
@@ -145,7 +191,27 @@ def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
             capability="os.app.launch",
             timeout_ms=5000,
             idempotent=False,
-            verification="process_started",
+            verification="os_activation_ack",
+        ),
+        ToolSpec(
+            tool_id="fs.metadata.search",
+            version=1,
+            risk=RiskClass.R0,
+            channels=(ChannelKind.LOCAL,),
+            capability="fs.read",
+            timeout_ms=5000,
+            idempotent=True,
+            verification="sqlite_read",
+        ),
+        ToolSpec(
+            tool_id="fs.file.open",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL,),
+            capability="fs.read",
+            timeout_ms=5000,
+            idempotent=False,
+            verification="os_registered_open",
         ),
         ToolSpec(
             tool_id="memory.create",
@@ -168,6 +234,46 @@ def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
             verification="sqlite_commit",
         ),
         ToolSpec(
+            tool_id="life.task.create",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL, ChannelKind.REMOTE),
+            capability="life.task",
+            timeout_ms=3000,
+            idempotent=False,
+            verification="sqlite_commit",
+        ),
+        ToolSpec(
+            tool_id="life.task.list",
+            version=1,
+            risk=RiskClass.R0,
+            channels=(ChannelKind.LOCAL, ChannelKind.REMOTE),
+            capability="life.task",
+            timeout_ms=3000,
+            idempotent=True,
+            verification="sqlite_read",
+        ),
+        ToolSpec(
+            tool_id="knowledge.query",
+            version=1,
+            risk=RiskClass.R0,
+            channels=(ChannelKind.LOCAL, ChannelKind.REMOTE),
+            capability="knowledge.read",
+            timeout_ms=10000,
+            idempotent=True,
+            verification="citation_readback",
+        ),
+        ToolSpec(
+            tool_id="screen.analyze",
+            version=1,
+            risk=RiskClass.R1,
+            channels=(ChannelKind.LOCAL,),
+            capability="screen.read",
+            timeout_ms=5000,
+            idempotent=True,
+            verification="redacted_uia_read",
+        ),
+        ToolSpec(
             tool_id="storage.location.migrate",
             version=1,
             risk=RiskClass.R2,
@@ -188,6 +294,16 @@ def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
             verification="handle_readback",
         ),
         ToolSpec(
+            tool_id="fs.file.edit",
+            version=1,
+            risk=RiskClass.R2,
+            channels=(ChannelKind.LOCAL,),
+            capability="fs.edit",
+            timeout_ms=10000,
+            idempotent=False,
+            verification="sha256_readback",
+        ),
+        ToolSpec(
             tool_id="web.search.query",
             version=1,
             risk=RiskClass.R0,
@@ -197,6 +313,16 @@ def default_tool_registry() -> dict[tuple[str, int], ToolSpec]:
             idempotent=True,
             requires_network=True,
             verification="http_response",
+        ),
+        ToolSpec(
+            tool_id="workflow.execute",
+            version=1,
+            risk=RiskClass.R2,
+            channels=(ChannelKind.LOCAL,),
+            capability="workflow.execute",
+            timeout_ms=120000,
+            idempotent=False,
+            verification="workflow_step_receipts",
         ),
         ToolSpec(
             tool_id="os.shell.exec",
@@ -224,6 +350,8 @@ class CoreContainer:
     vault: SecretVaultAndCryptoPort
     audio_port: AudioDevicePort
     desktop_port: DesktopAutomationPort
+    app_catalog: ApplicationCatalogPort
+    file_opener: FileOpenerPort
     notification_port: NotificationPort
     event_bus: SequencedEventBus
     policy_engine: PolicyEngine
@@ -235,18 +363,33 @@ class CoreContainer:
     ai_registry: AiRegistryService
     voice_service: VoicePipelineService
     memory_service: MemoryVaultService
+    context_service: ContextAssemblerService
     reminder_service: ReminderSchedulerService
+    scheduler_runner: BackgroundSchedulerRunner
     turn_orchestrator: TurnOrchestratorService
     knowledge_service: KnowledgeRagService
+    file_index_service: FileIndexService
+    file_mutation_service: FileMutationService
     web_service: WebIntelligenceService
     screen_service: ScreenAwarenessService
     life_service: PersonalLifeService
     workflow_service: WorkflowEngineService
     ecosystem_service: EcosystemGovernanceService
+    mcp_host_service: McpHostService
+    oauth_connector_service: OAuthReadOnlyConnectorService
     camera_service: OnDemandCameraService
     ha_service: HomeAssistantService
     remote_gateway_service: RemoteGatewayService
     preference_proposal_service: PreferenceProposalService
+    local_llm_manager: LocalLlmRuntimeManager
+    live_voice_engine: LiveVoiceEngine
+    resource_governor: DynamicResourceGovernor
+    os_lock_probe: Callable[[], bool] = is_windows_workstation_locked
+    manual_os_locked: bool = False
+
+    def effective_os_locked(self, client_flag: bool = False) -> bool:
+        """Authoritative workstation lock state: client False can NEVER override locked host/session (IR-07)."""
+        return bool(self.manual_os_locked or self.os_lock_probe() or client_flag)
 
 
 class _StrictRequest(BaseModel):
@@ -261,6 +404,12 @@ class SetStorageLocationBody(_StrictRequest):
 class MigrateStorageBody(_StrictRequest):
     category: StorageCategory
     target_path: str = Field(min_length=1, max_length=1024)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class ApplyStorageMigrationBody(_StrictRequest):
+    approval_id: str = Field(min_length=8, max_length=128)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
 
 
 class CleanupCacheBody(_StrictRequest):
@@ -306,6 +455,10 @@ class SessionLockBody(_StrictRequest):
     reason: str = Field(default="os_session_locked", min_length=1, max_length=128)
 
 
+class CancelRequestBody(_StrictRequest):
+    request_id: str | None = Field(default=None, max_length=64)
+
+
 class SubmitTurnBody(_StrictRequest):
     utterance: str = Field(min_length=1, max_length=2000)
     session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
@@ -315,6 +468,11 @@ class SubmitTurnBody(_StrictRequest):
     is_os_locked: bool = False
     is_suspended: bool = False
     is_muted: bool = False
+    speak_reply: bool = False
+
+
+class ArmLiveVoiceBody(_StrictRequest):
+    mode: VoiceMode
 
 
 class SetAudioModeBody(_StrictRequest):
@@ -324,6 +482,16 @@ class SetAudioModeBody(_StrictRequest):
 class SelectAudioDevicesBody(_StrictRequest):
     input_device_id: str | None = None
     output_device_id: str | None = None
+
+
+class SetSpeechRateBody(_StrictRequest):
+    speech_rate: float = Field(ge=0.5, le=2.0)
+
+
+class ReplayTranscriptBody(_StrictRequest):
+    transcript: str = Field(min_length=1, max_length=2000)
+    session_id: str = Field(default="local-voice-session", min_length=1, max_length=64)
+    speak_reply: bool = False
 
 
 class CreateMemoryBody(_StrictRequest):
@@ -369,15 +537,89 @@ class KnowledgeQueryBody(_StrictRequest):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class FileSearchBody(_StrictRequest):
+    query: str = Field(default="", max_length=256)
+    ext: str | None = Field(default=None, max_length=16)
+    modified_after_utc: datetime | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class FileOpenBody(_StrictRequest):
+    file_query: str | None = Field(default=None, max_length=256)
+    result_index: int | None = Field(default=None, ge=1, le=50)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class ProposeFileEditBody(_StrictRequest):
+    root_id: str = Field(min_length=1, max_length=64)
+    relative_path: str = Field(min_length=1, max_length=512)
+    new_content: str = Field(min_length=1, max_length=131072)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class ProposeFileMoveBody(_StrictRequest):
+    root_id: str = Field(min_length=1, max_length=64)
+    source_relative_path: str = Field(min_length=1, max_length=512)
+    target_relative_path: str = Field(min_length=1, max_length=512)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class ApplyFileMutationBody(_StrictRequest):
+    approval_id: str = Field(min_length=8, max_length=128)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
 class WebQueryBody(_StrictRequest):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=5, ge=1, le=10)
     private_query_approved: bool = False
+    allow_stale_cache_when_offline: bool = False
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
 
 
 class WebFetchBody(_StrictRequest):
     url: str = Field(min_length=8, max_length=2048)
     require_https: bool = False
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
+
+
+class WebProviderConfigBody(_StrictRequest):
+    provider_name: str = Field(default="searxng_json", min_length=2, max_length=64)
+    endpoint_url: str = Field(min_length=10, max_length=512)
+    allow_loopback_searxng: bool = False
+    consent_acknowledged: bool = False
+
+
+class HaConnectBody(_StrictRequest):
+    base_url: str = Field(min_length=10, max_length=512)
+    credential_vault_ref: str = Field(min_length=3, max_length=128)
+    allow_loopback_http: bool = False
+    consent_acknowledged: bool = False
+
+
+class OAuthStartBody(_StrictRequest):
+    connector_id: str = Field(min_length=3, max_length=64)
+    kind: str = Field(pattern=r"^(oauth_calendar|oauth_mail)$")
+    provider_name: str = Field(min_length=2, max_length=64)
+    authorize_url: str = Field(min_length=10, max_length=512)
+    token_url: str = Field(min_length=10, max_length=512)
+    api_base_url: str = Field(min_length=10, max_length=512)
+    redirect_uri: str = Field(min_length=12, max_length=256)
+    client_id: str = Field(min_length=2, max_length=128)
+    scopes: tuple[str, ...] = Field(min_length=1, max_length=8)
+    consent_acknowledged: bool = False
+
+
+class OAuthCompleteBody(_StrictRequest):
+    state_nonce: str = Field(min_length=12, max_length=128)
+    authorization_code: str = Field(min_length=2, max_length=512)
+    code_verifier: str = Field(min_length=43, max_length=128)
+
+
+class RemoteTlsProvisionBody(_StrictRequest):
+    bind_address: str = Field(min_length=3, max_length=64)
+    validity_days: int = Field(default=365, ge=1, le=825)
 
 
 class ScreenAnalyzeBody(_StrictRequest):
@@ -431,6 +673,7 @@ class CreateWorkflowBody(_StrictRequest):
 
 class ExecuteWorkflowBody(_StrictRequest):
     approved_bound_hash: str | None = None
+    approval_id: str | None = Field(default=None, min_length=8, max_length=128)
     session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
     actor_ref: str = Field(default="local_owner", min_length=1, max_length=64)
     cancel_after_step: int | None = None
@@ -444,6 +687,16 @@ class InstallExtensionBody(_StrictRequest):
 
 class ToggleExtensionBody(_StrictRequest):
     enabled: bool
+
+
+class ToggleMcpServerBody(_StrictRequest):
+    enabled: bool
+
+
+class CallMcpToolBody(_StrictRequest):
+    tool_name: str = Field(min_length=2, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    session_id: str = Field(default="local-session-1", min_length=1, max_length=64)
 
 
 class CameraGrantBody(_StrictRequest):
@@ -553,9 +806,12 @@ def build_default_container(
     vault: SecretVaultAndCryptoPort | None = None,
     audio_port: AudioDevicePort | None = None,
     desktop_port: DesktopAutomationPort | None = None,
+    app_catalog: ApplicationCatalogPort | None = None,
+    file_opener: FileOpenerPort | None = None,
     notification_port: NotificationPort | None = None,
     camera_port: CameraCapturePort | None = None,
     ha_client: HomeAssistantClientPort | None = None,
+    tier1_auto_allow: bool | None = None,
 ) -> CoreContainer:
     data_dir = settings.resolved_data_dir()
     cache_dir = settings.resolved_cache_dir()
@@ -567,8 +823,40 @@ def build_default_container(
     resolved_sup = supervisor or WindowsJobProcessSupervisor()
     resolved_vault = vault or WindowsVaultAndCryptoAdapter()
     resolved_audio = audio_port or WindowsAudioDeviceAdapter()
-    resolved_desktop = desktop_port or WindowsDesktopAutomationAdapter(allow_live_launch=False)
-    resolved_notify = notification_port or FakeNotificationAdapter()
+    resolved_desktop = desktop_port or WindowsDesktopAutomationAdapter(
+        allow_live_launch=(settings.env != "test")
+    )
+    resolved_app_catalog: ApplicationCatalogPort = (
+        app_catalog
+        if app_catalog is not None
+        else WindowsApplicationCatalogAdapter(scan_registry=(settings.env != "test"))
+    )
+    resolved_file_opener: FileOpenerPort = (
+        file_opener
+        if file_opener is not None
+        else WindowsFileOpenerAdapter(
+            resolved_fs, allow_live_open=(settings.env != "test")
+        )
+    )
+    resolved_notify: NotificationPort = (
+        notification_port
+        if notification_port is not None
+        else (
+            FakeNotificationAdapter()
+            if settings.env == "test"
+            else (
+                WindowsToastNotificationAdapter(allow_live_toast=True)
+                if sys.platform == "win32"
+                else UnavailableNotificationAdapter()
+            )
+        )
+    )
+    resolved_lock_probe: Callable[[], bool] = (
+        (lambda: False) if settings.env == "test" else is_windows_workstation_locked
+    )
+    resolved_tier1 = (
+        tier1_auto_allow if tier1_auto_allow is not None else (settings.env != "test")
+    )
 
     db = DualSqliteManager(
         core_db_path=Path(roots.core_db) / "jarvis_core.db",
@@ -585,9 +873,17 @@ def build_default_container(
     storage_service = StorageService(db, config_service, resolved_fs, resolved_clock)
     storage_service.sync_locations_from_config()
 
-    policy_engine = PolicyEngine(default_tool_registry())
+    policy_engine = PolicyEngine(
+        default_tool_registry(), tier1_auto_allow=resolved_tier1
+    )
     approval_service = ApprovalService(db, resolved_clock, event_bus)
-    backup_service = BackupService(db, resolved_clock)
+    backup_service = BackupService(
+        db,
+        resolved_clock,
+        allowed_backup_root=Path(roots.backups),
+        fs_port=resolved_fs,
+        vault=resolved_vault,
+    )
     license_service = LicenseInventoryService(db, resolved_clock)
     license_service.seed_baseline_if_empty()
 
@@ -603,9 +899,37 @@ def build_default_container(
         tts_providers=(WindowsOneCoreVoiceProbeAdapter(),),
     )
     memory_service = MemoryVaultService(db, resolved_vault, resolved_clock)
+    context_service = ContextAssemblerService(db, config_service, memory_service, resolved_clock)
     reminder_service = ReminderSchedulerService(
         db, config_service, resolved_notify, resolved_clock, event_bus
     )
+    scheduler_runner = BackgroundSchedulerRunner(
+        reminder_service, resolved_clock, interval_seconds=5.0
+    )
+    knowledge_service = KnowledgeRagService(db, resolved_fs, resolved_clock, event_bus)
+    file_index_service = FileIndexService(
+        db, resolved_fs, resolved_clock, opener=resolved_file_opener
+    )
+    file_mutation_service = FileMutationService(
+        db, policy_engine, approval_service, resolved_fs, resolved_clock
+    )
+    web_service = WebIntelligenceService(
+        db,
+        config_service,
+        SafeWebFetchClient(resolved_clock),
+        resolved_clock,
+        context_service=context_service,
+    )
+    screen_service = ScreenAwarenessService(
+        db,
+        resolved_clock,
+        capture_port=(
+            WindowsActiveWindowCaptureAdapter()
+            if sys.platform == "win32" and settings.env != "test"
+            else None
+        ),
+    )
+    life_service = PersonalLifeService(db, resolved_clock)
     turn_orchestrator = TurnOrchestratorService(
         db=db,
         config_service=config_service,
@@ -618,19 +942,141 @@ def build_default_container(
         fs_port=resolved_fs,
         clock=resolved_clock,
         event_bus=event_bus,
+        knowledge_service=knowledge_service,
+        life_service=life_service,
+        screen_service=screen_service,
+        app_catalog=resolved_app_catalog,
+        file_index_service=file_index_service,
+        context_service=context_service,
     )
-    knowledge_service = KnowledgeRagService(db, resolved_fs, resolved_clock, event_bus)
-    web_service = WebIntelligenceService(
-        db, config_service, SafeWebFetchClient(resolved_clock), resolved_clock
+
+    async def _workflow_step_executor(
+        step: ToolStepProposal, session: SessionContext, correlation_id: str
+    ) -> tuple[ActionOutcomeState, bool, str]:
+        rec = await turn_orchestrator.execute_verified_step_for_workflow(
+            step.tool_id,
+            step.version,
+            step.args,
+            session=session,
+            correlation_id=correlation_id,
+        )
+        return (rec.state, rec.verified, rec.summary)
+
+    workflow_service = WorkflowEngineService(
+        db,
+        policy_engine,
+        resolved_clock,
+        approval_service=approval_service,
+        allow_simulated_steps=False,
+        async_step_executor=_workflow_step_executor,
     )
-    screen_service = ScreenAwarenessService(db, resolved_clock)
-    life_service = PersonalLifeService(db, resolved_clock)
-    workflow_service = WorkflowEngineService(db, policy_engine, resolved_clock)
     ecosystem_service = EcosystemGovernanceService(db, resolved_vault, resolved_clock)
-    camera_service = OnDemandCameraService(db, resolved_clock, event_bus, capture_port=camera_port)
+    mcp_host_service = McpHostService(
+        db,
+        resolved_vault,
+        resolved_clock,
+        event_bus,
+        context_service=context_service,
+        transport=McpStdioTransport(),
+    )
+    oauth_connector_service = OAuthReadOnlyConnectorService(
+        db,
+        config_service,
+        resolved_vault,
+        life_service,
+        resolved_clock,
+        context_service=context_service,
+    )
+    resolved_camera_port: CameraCapturePort | None = camera_port
+    if resolved_camera_port is None and sys.platform == "win32" and settings.env != "test":
+        resolved_camera_port = WindowsOnDemandCameraAdapter(allow_live_hardware_capture=True)
+    camera_service = OnDemandCameraService(
+        db, resolved_clock, event_bus, capture_port=resolved_camera_port
+    )
     ha_service = HomeAssistantService(db, resolved_clock, client=ha_client)
-    remote_gateway_service = RemoteGatewayService(db, resolved_clock)
+    remote_gateway_service = RemoteGatewayService(
+        db, resolved_clock, tls_dir=data_dir / "remote_tls"
+    )
     preference_proposal_service = PreferenceProposalService(db, config_service, resolved_clock)
+
+    active_cfg = config_service.get_active().document
+    runtimes_dirs_list: list[Path] = []
+    if settings.runtimes_dir is not None:
+        runtimes_dirs_list.append(settings.runtimes_dir)
+    runtimes_dirs_list.append(Path(roots.runtimes))
+    models_dirs_list: list[Path] = []
+    if settings.models_dir is not None:
+        models_dirs_list.append(settings.models_dir)
+    models_dirs_list.append(Path(roots.models))
+    for shared_dir in active_cfg.storage.shared_model_directories:
+        models_dirs_list.append(Path(shared_dir))
+
+    hw_snapshot = resolved_hw.discover()
+    provenance_verifier = ArtifactProvenanceVerifier(
+        manifest_path=data_dir / "trusted_artifacts.json",
+        require_manifest=True,
+    )
+    local_llm_manager = LocalLlmRuntimeManager(
+        supervisor=resolved_sup,
+        ai_registry=ai_registry,
+        runtimes_dirs=tuple(runtimes_dirs_list),
+        models_dirs=tuple(models_dirs_list),
+        hardware_snapshot=hw_snapshot,
+        provenance_verifier=provenance_verifier,
+    )
+
+    async def _on_voice_utterance(spoken_text: str) -> tuple[str, str, bool]:
+        cfg_now = config_service.get_active().document
+        voice_session = SessionContext(
+            session_id="local-voice-session",
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.VOICE,
+            is_os_locked=resolved_lock_probe(),
+            offline_mode=cfg_now.ai.offline_mode,
+        )
+        res = await turn_orchestrator.submit_turn(
+            spoken_text, session=voice_session, correlation_id=f"voice_{uuid.uuid4().hex[:12]}"
+        )
+        return (res.reply, res.route_kind, res.llm_called)
+
+    async def _on_voice_utterance_stream(
+        spoken_text: str, on_sentence: Callable[[str], None]
+    ) -> tuple[str, str, bool]:
+        cfg_now = config_service.get_active().document
+        voice_session = SessionContext(
+            session_id="local-voice-session",
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.VOICE,
+            is_os_locked=resolved_lock_probe(),
+            offline_mode=cfg_now.ai.offline_mode,
+        )
+        res = await turn_orchestrator.submit_turn_streaming(
+            spoken_text,
+            session=voice_session,
+            correlation_id=f"voice_{uuid.uuid4().hex[:12]}",
+            on_sentence=on_sentence,
+        )
+        return (res.reply, res.route_kind, res.llm_called)
+
+    def _voice_hotwords() -> tuple[tuple[str, ...], tuple[str, ...]]:
+        app_names = tuple(e.display_name for e in resolved_app_catalog.list_apps()[:12])
+        recent_files = tuple(
+            h.display_name
+            for h in file_index_service.working_set.get_all("local-voice-session")[:5]
+        )
+        return (app_names, recent_files)
+
+    live_voice_engine = LiveVoiceEngine(
+        models_dirs=tuple(models_dirs_list),
+        turn_callback=_on_voice_utterance,
+        stream_turn_callback=_on_voice_utterance_stream,
+        provenance_verifier=provenance_verifier,
+        hotword_provider=_voice_hotwords,
+    )
+    # B11: Retire the split between VoicePipelineService and LiveVoiceEngine by unifying lifecycle & config!
+    voice_service.bind_live_hook(live_voice_engine)
 
     ipc_transport = TokenIpcTransport(
         transport_kind="win_named_pipe_or_loopback" if sys.platform == "win32" else "loopback",
@@ -649,6 +1095,8 @@ def build_default_container(
         vault=resolved_vault,
         audio_port=resolved_audio,
         desktop_port=resolved_desktop,
+        app_catalog=resolved_app_catalog,
+        file_opener=resolved_file_opener,
         notification_port=resolved_notify,
         event_bus=event_bus,
         policy_engine=policy_engine,
@@ -660,18 +1108,29 @@ def build_default_container(
         ai_registry=ai_registry,
         voice_service=voice_service,
         memory_service=memory_service,
+        context_service=context_service,
         reminder_service=reminder_service,
+        scheduler_runner=scheduler_runner,
         turn_orchestrator=turn_orchestrator,
         knowledge_service=knowledge_service,
+        file_index_service=file_index_service,
+        file_mutation_service=file_mutation_service,
         web_service=web_service,
         screen_service=screen_service,
         life_service=life_service,
         workflow_service=workflow_service,
         ecosystem_service=ecosystem_service,
+        mcp_host_service=mcp_host_service,
+        oauth_connector_service=oauth_connector_service,
         camera_service=camera_service,
         ha_service=ha_service,
         remote_gateway_service=remote_gateway_service,
         preference_proposal_service=preference_proposal_service,
+        local_llm_manager=local_llm_manager,
+        live_voice_engine=live_voice_engine,
+        resource_governor=DynamicResourceGovernor(idle_vram_unload_seconds=300),
+        os_lock_probe=resolved_lock_probe,
+        manual_os_locked=False,
     )
 
 
@@ -683,6 +1142,14 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        active_container.live_voice_engine.bind_event_loop(asyncio.get_running_loop())
+        llm_boot_task: asyncio.Task[Any] | None = None
+        if active_container.settings.auto_start_local_llm and active_container.settings.env != "test":
+            llm_boot_task = asyncio.create_task(
+                active_container.local_llm_manager.start_if_available()
+            )
+        if active_container.settings.env != "test":
+            await active_container.scheduler_runner.start()
         logger.info(
             "core.startup.ready",
             env=active_container.settings.env,
@@ -692,19 +1159,26 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await active_container.scheduler_runner.stop()
+            if llm_boot_task is not None and not llm_boot_task.done():
+                llm_boot_task.cancel()
+            active_container.live_voice_engine.shutdown()
+            active_container.local_llm_manager.stop()
+            active_container.mcp_host_service.kill_all_servers(correlation_id="core-shutdown")
             closed_children = active_container.supervisor.close_all_managed()
             active_container.db.close()
             logger.info("core.shutdown.completed", closed_managed_children=closed_children)
 
     app = FastAPI(
         title="J.A.R.V.I.S. Local Core API",
-        version="0.2.1",
+        version="0.2.2",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
         lifespan=lifespan,
     )
     app.state.container = active_container
+    pending_storage_migrations: dict[str, tuple[StorageCategory, str, str]] = {}
 
     @app.middleware("http")
     async def security_and_wide_event_middleware(
@@ -717,12 +1191,13 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id, correlation_id=correlation_id)
 
-        # 1. Strict Host header validation (anti DNS-rebinding, 08-INTERFACE-CONTRACTS.md §1)
-        raw_host = (request.headers.get("host") or "").split(":", 1)[0].lower()
-        if raw_host and raw_host not in ALLOWED_LOOPBACK_HOSTS:
+        # 1. Strict Host header validation: supports IPv6 [::1]:port AND rejects empty/missing Host (DEF-22, B05)
+        raw_host_header = request.headers.get("host") or ""
+        parsed_host = _extract_host_without_port(raw_host_header)
+        if not parsed_host or parsed_host not in ALLOWED_LOOPBACK_HOSTS:
             resp = _error_response(
                 code=ErrorCode.DENIED,
-                message="Disallowed Host header on local core transport.",
+                message="Missing or disallowed Host header on local core transport.",
                 correlation_id=correlation_id,
                 http_status=status.HTTP_403_FORBIDDEN,
             )
@@ -740,7 +1215,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             resp.headers["X-Request-Id"] = request_id
             return resp
 
-        # 3. Payload size ceiling <= 256 KiB (08-INTERFACE-CONTRACTS.md §1)
+        # 3. Payload size ceiling <= 256 KiB enforced on BOTH Content-Length AND chunked bodies (DEF-22, B05)
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
@@ -749,12 +1224,34 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                         code=ErrorCode.INVALID_ARGS,
                         message="Payload exceeds 256 KiB local IPC limit.",
                         correlation_id=correlation_id,
-                        http_status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        http_status=status.HTTP_413_CONTENT_TOO_LARGE,
                     )
                     resp.headers["X-Request-Id"] = request_id
                     return resp
             except ValueError:
-                pass
+                resp = _error_response(
+                    code=ErrorCode.INVALID_ARGS,
+                    message="Malformed Content-Length header.",
+                    correlation_id=correlation_id,
+                    http_status=status.HTTP_400_BAD_REQUEST,
+                )
+                resp.headers["X-Request-Id"] = request_id
+                return resp
+        elif request.method in ("POST", "PUT", "PATCH"):
+            body_chunks = bytearray()
+            async for chunk in request.stream():
+                body_chunks.extend(chunk)
+                if len(body_chunks) > MAX_PAYLOAD_BYTES:
+                    resp = _error_response(
+                        code=ErrorCode.INVALID_ARGS,
+                        message="Chunked payload exceeds 256 KiB local IPC limit.",
+                        correlation_id=correlation_id,
+                        http_status=status.HTTP_413_CONTENT_TOO_LARGE,
+                    )
+                    resp.headers["X-Request-Id"] = request_id
+                    return resp
+            # Cache validated body bytes so downstream route handlers can read JSON cleanly
+            request._body = bytes(body_chunks)  # noqa: SLF001
 
         # 4. Constant-time 256-bit Bearer authentication on all /v1/* endpoints
         if request.url.path != "/healthz":
@@ -826,14 +1323,67 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
     @app.get("/v1/health")
     @app.get("/v1/ready")
     async def readiness() -> dict[str, Any]:
-        db_health = active_container.db.check_health()
+        # IR-17 / B07: fast SELECT 1 check avoids blocking Uvicorn event loop with full PRAGMA integrity_check
+        db_health = active_container.db.check_health_fast()
+        desktop_live = bool(getattr(active_container.desktop_port, "_allow_live_launch", True))
+        notify_available = not isinstance(active_container.notification_port, UnavailableNotificationAdapter)
+        llm_status = active_container.local_llm_manager.status
         return {
             "schema_version": 1,
             "status": "ready" if db_health["core_db_ok"] and db_health["knowledge_db_ok"] else "degraded",
             "release_sha": active_container.settings.release_sha,
             "components": db_health,
             "event_seq": active_container.event_bus.current_seq,
+            "os_locked": active_container.effective_os_locked(),
+            "capability_states": {
+                "desktop_app_launch": "ready" if desktop_live else "unavailable",
+                "notifications": "ready" if notify_available else "unavailable",
+                "scheduler": "ready",
+                "workflow_execution": "ready",
+                "storage_migration_http": "ready_tier2_gui_approval",
+                "file_move": "ready_tier2_gui_approval",
+                "file_edit": "ready_tier2_gui_approval",
+                "mcp_host": "ready_opt_in_readonly_pilot",
+                "web_search": (
+                    "ready_opt_in"
+                    if active_container.web_service.get_provider_consent_state().enabled
+                    else "opt_in_unconfigured"
+                ),
+                "oauth_readonly": "ready_opt_in_pkce",
+                "home_assistant": (
+                    "ready_lan_allowlist"
+                    if active_container.ha_service.is_live_client_configured()
+                    else "opt_in_unconfigured"
+                ),
+                "camera": (
+                    "ready_on_demand"
+                    if isinstance(
+                        active_container.camera_service._capture_port, WindowsOnDemandCameraAdapter
+                    )
+                    and active_container.camera_service._capture_port.is_capture_backend_ready()
+                    else "opt_in_unavailable"
+                ),
+                "remote_gateway": (
+                    "experimental"
+                    if active_container.settings.env == "test"
+                    else (
+                        "ready_tls_hardened"
+                        if active_container.remote_gateway_service.get_config().enabled
+                        and active_container.remote_gateway_service.verify_provisioned_tls(
+                            active_container.remote_gateway_service.get_config().tls_cert_fingerprint_sha256
+                        )[0]
+                        else "opt_in_tls_required"
+                    )
+                ),
+                "local_llm": "ready" if llm_status.ready else ("degraded" if llm_status.starting else "unavailable"),
+            },
         }
+
+    @app.get("/v1/diagnostics/integrity")
+    async def deep_integrity_check() -> dict[str, Any]:
+        """Run deep PRAGMA integrity_check off the async event loop (IR-17, B07)."""
+        db_health = await asyncio.to_thread(active_container.db.check_health)
+        return {"schema_version": 1, "integrity": db_health}
 
     @app.get("/v1/system/capabilities")
     async def discover_capabilities() -> dict[str, Any]:
@@ -864,6 +1414,31 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             "recommendation": recommendation.model_dump(mode="json"),
         }
 
+    @app.get("/v1/system/governor")
+    async def evaluate_resource_governor(
+        idle_seconds: float = Query(default=0.0, ge=0.0, le=86400.0),
+        gaming_active: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Live hardware-aware resource governor evaluation (B20, NFR-14, DEC-016)."""
+        snapshot = active_container.hardware_port.discover()
+        active_profile = active_container.ai_registry.get_active_profile().profile
+        llm_st = active_container.local_llm_manager.status
+        llm_healthy = active_profile.mode.value == "direct" or llm_st.ready or active_container.ai_registry.get_adapter(
+            active_profile.role_bindings.get("llm_provider", "")
+        ) is not None
+        decision = active_container.resource_governor.evaluate(
+            snapshot,
+            requested_mode=active_profile.mode,
+            idle_seconds=idle_seconds,
+            gaming_or_fullscreen_active=gaming_active,
+            llm_runtime_healthy=llm_healthy,
+        )
+        return {
+            "schema_version": 1,
+            "active_profile_id": active_profile.id,
+            "decision": decision.model_dump(mode="json"),
+        }
+
     @app.get("/v1/config")
     async def get_config() -> dict[str, Any]:
         rev = active_container.config_service.get_active()
@@ -882,6 +1457,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             validated = active_container.config_service.validate_payload(body)
             rev = active_container.config_service.save_revision(validated, source="user", correlation_id=_corr(request))
             active_container.storage_service.sync_locations_from_config()
+            active_container.voice_service.bind_live_hook(active_container.live_voice_engine)
             return JSONResponse(
                 {
                     "schema_version": 1,
@@ -955,6 +1531,12 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
     async def set_storage_location(
         category: StorageCategory, body: SetStorageLocationBody, request: Request
     ) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; storage root reconfiguration denied.",
+                correlation_id=_corr(request),
+            )
         try:
             rec = active_container.storage_service.set_location(
                 category, body.path, quota_bytes=body.quota_bytes, correlation_id=_corr(request)
@@ -965,10 +1547,111 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/storage/migrate")
     async def migrate_storage(body: MigrateStorageBody, request: Request) -> Response:
-        try:
-            res = active_container.storage_service.migrate_location(
-                body.category, body.target_path, correlation_id=_corr(request)
+        # IR-02 / B03 / B19: direct unapproved HTTP migration remains permanently disabled; callers MUST use propose + apply!
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; storage migration denied.",
+                correlation_id=_corr(request),
             )
+        return _error_response(
+            code=ErrorCode.UNSUPPORTED,
+            message="Direct unapproved storage migration is prohibited; use POST /v1/storage/migrate/propose + GUI R2 approval + POST /v1/storage/migrate/apply.",
+            correlation_id=_corr(request),
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    @app.post("/v1/storage/migrate/propose")
+    async def propose_storage_migration(body: MigrateStorageBody, request: Request) -> Response:
+        """Stage G5 (B19): propose quiesced online-backup storage migration requiring single-use GUI R2 approval."""
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        decision = active_container.policy_engine.evaluate_step(
+            tool_id="storage.location.migrate",
+            tool_version=1,
+            args={"category": body.category.value, "target_path": body.target_path},
+            session=session,
+            grants=_load_all_grants(),
+            now_utc=active_container.clock.now_utc(),
+        )
+        if not decision.requires_approval and not decision.allowed:
+            return _error_response(
+                code=decision.error_code or ErrorCode.DENIED,
+                message=decision.reason,
+                correlation_id=_corr(request),
+            )
+        current_path = cfg.storage.roots.as_category_map()[body.category]
+        try:
+            challenge = active_container.approval_service.create_challenge(
+                request_id=f"req_mig_{uuid.uuid4().hex[:10]}",
+                correlation_id=_corr(request),
+                tool_id="storage.location.migrate",
+                tool_version=1,
+                canonical_args_hash=decision.canonical_args_hash,
+                session=session,
+                summary=f"Migrate storage '{body.category.value}' from '{current_path}' to '{body.target_path}' (quiesced online backup, source kept intact)",
+            )
+        except ApprovalError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+        pending_storage_migrations[challenge.approval_id] = (
+            body.category,
+            body.target_path,
+            challenge.bound_hash,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "schema_version": 1,
+                "requires_approval": True,
+                "before_preview": f"{body.category.value} -> {current_path}",
+                "after_preview": f"{body.category.value} -> {body.target_path}",
+                "approval": challenge.model_dump(mode="json"),
+            },
+        )
+
+    @app.post("/v1/storage/migrate/apply")
+    async def apply_storage_migration(body: ApplyStorageMigrationBody, request: Request) -> Response:
+        """Stage G5 (B19): consume GUI approval and run checksum-verified quiesced online-backup migration."""
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; storage migration denied.",
+                correlation_id=_corr(request),
+            )
+        spec = pending_storage_migrations.get(body.approval_id)
+        if spec is None:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message=f"No pending storage migration for approval '{body.approval_id}'.",
+                correlation_id=_corr(request),
+            )
+        category, target_path, bound_hash = spec
+        try:
+            active_container.approval_service.consume_approved_for_execution(
+                body.approval_id,
+                expected_bound_hash=bound_hash,
+                session_id=body.session_id,
+                actor_ref="local_owner",
+                expected_tool_id="storage.location.migrate",
+            )
+        except ApprovalError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+        try:
+            res = await asyncio.to_thread(
+                active_container.storage_service.migrate_location,
+                category,
+                target_path,
+                correlation_id=_corr(request),
+            )
+            pending_storage_migrations.pop(body.approval_id, None)
             return JSONResponse(
                 {
                     "schema_version": 1,
@@ -977,6 +1660,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                     "target_path": res.target_path,
                     "files_verified": res.files_verified,
                     "total_bytes": res.total_bytes,
+                    "rolled_back": res.rolled_back,
                 }
             )
         except StorageServiceError as exc:
@@ -984,6 +1668,12 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/storage/cleanup")
     async def cleanup_storage_cache(body: CleanupCacheBody, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; cache cleanup denied.",
+                correlation_id=_corr(request),
+            )
         try:
             res = active_container.storage_service.cleanup_cache_lru(
                 body.category, body.max_bytes, correlation_id=_corr(request)
@@ -1000,16 +1690,12 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         except StorageServiceError as exc:
             return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
-    @app.get("/v1/grants")
-    async def list_grants() -> dict[str, Any]:
+    def _load_all_grants() -> tuple[GrantRecord, ...]:
         with active_container.db.core_read() as conn:
             rows = conn.execute(
-                """
-                SELECT id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision
-                FROM grant ORDER BY id ASC
-                """
+                "SELECT id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision FROM grant"
             ).fetchall()
-        items = [
+        return tuple(
             GrantRecord(
                 id=str(r["id"]),
                 subject_type=str(r["subject_type"]),  # type: ignore[arg-type]
@@ -1019,16 +1705,39 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 expires_at=datetime.fromisoformat(str(r["expires_at"])) if r["expires_at"] else None,
                 revoked_at=datetime.fromisoformat(str(r["revoked_at"])) if r["revoked_at"] else None,
                 revision=int(r["revision"]),
-            ).model_dump(mode="json")
+            )
             for r in rows
-        ]
+        )
+
+    @app.get("/v1/grants")
+    async def list_grants() -> dict[str, Any]:
+        items = [g.model_dump(mode="json") for g in _load_all_grants()]
         return {"schema_version": 1, "grants": items}
 
     @app.put("/v1/grants")
-    async def upsert_grant(body: UpsertGrantBody, request: Request) -> dict[str, Any]:
-        grant_id = body.id or str(uuid.uuid4())
+    async def upsert_grant(body: UpsertGrantBody, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; permission grant modification denied.",
+                correlation_id=_corr(request),
+            )
+        canonical_scope = json.dumps(body.scope, sort_keys=True)
         now_iso = active_container.clock.now_utc().isoformat()
         with active_container.db.core_tx() as conn:
+            # B02 / DEF-20: deduplicate active grants for same (subject_type, subject_id, capability, scope)
+            grant_id = body.id
+            if grant_id is None:
+                existing = conn.execute(
+                    """
+                    SELECT id FROM grant
+                    WHERE subject_type = ? AND subject_id = ? AND capability = ?
+                      AND scope_json = ? AND revoked_at IS NULL
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (body.subject_type, body.subject_id, body.capability, canonical_scope),
+                ).fetchone()
+                grant_id = str(existing["id"]) if existing is not None else str(uuid.uuid4())
             conn.execute(
                 """
                 INSERT INTO grant(id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision)
@@ -1044,7 +1753,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                     body.subject_type,
                     body.subject_id,
                     body.capability,
-                    json.dumps(body.scope, sort_keys=True),
+                    canonical_scope,
                     body.expires_at.isoformat() if body.expires_at else None,
                 ),
             )
@@ -1061,55 +1770,73 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                     now_iso,
                 ),
             )
-        return {"schema_version": 1, "grant_id": grant_id, "capability": body.capability}
+        return JSONResponse({"schema_version": 1, "grant_id": grant_id, "capability": body.capability})
 
     @app.delete("/v1/grants/{grant_id}")
     async def revoke_grant(grant_id: str, request: Request) -> Response:
         now_iso = active_container.clock.now_utc().isoformat()
         with active_container.db.core_tx() as conn:
-            cur = conn.execute(
-                "UPDATE grant SET revoked_at = ?, revision = revision + 1 WHERE id = ? AND revoked_at IS NULL",
-                (now_iso, grant_id),
-            )
-            if cur.rowcount == 0:
+            target = conn.execute(
+                "SELECT subject_id, capability FROM grant WHERE id = ? AND revoked_at IS NULL",
+                (grant_id,),
+            ).fetchone()
+            if target is None:
                 return _error_response(
                     code=ErrorCode.NOT_FOUND,
                     message=f"Active grant '{grant_id}' not found.",
                     correlation_id=_corr(request),
                 )
+            subject_id = str(target["subject_id"])
+            capability = str(target["capability"])
+            # B02 / DEF-20: atomically revoke ALL matching active grants for (subject_id, capability)
+            cur = conn.execute(
+                """
+                UPDATE grant
+                SET revoked_at = ?, revision = revision + 1
+                WHERE subject_id = ? AND capability = ? AND revoked_at IS NULL
+                """,
+                (now_iso, subject_id, capability),
+            )
+            revoked_count = cur.rowcount
+
+        affected_tools = tuple(
+            tool_id
+            for (tool_id, _ver), spec in default_tool_registry().items()
+            if spec.capability == capability
+        )
+        canceled_approvals = active_container.approval_service.cancel_pending_for_tools(
+            affected_tools, reason=f"grant_revoked:{capability}", correlation_id=_corr(request)
+        )
         active_container.event_bus.publish(
             event_type="permission.revoked",
             correlation_id=_corr(request),
-            payload={"grant_id": grant_id},
+            payload={
+                "grant_id": grant_id,
+                "capability": capability,
+                "revoked_count": revoked_count,
+                "canceled_approvals": canceled_approvals,
+            },
         )
-        return JSONResponse({"schema_version": 1, "grant_id": grant_id, "revoked": True})
+        return JSONResponse(
+            {
+                "schema_version": 1,
+                "grant_id": grant_id,
+                "revoked": True,
+                "revoked_count": revoked_count,
+                "canceled_approvals": canceled_approvals,
+            }
+        )
 
     @app.post("/v1/policy/evaluate")
     async def evaluate_policy(body: PolicyEvalBody, request: Request) -> Response:
         active_cfg = active_container.config_service.get_active().document
-        with active_container.db.core_read() as conn:
-            rows = conn.execute(
-                "SELECT id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision FROM grant"
-            ).fetchall()
-        grants = tuple(
-            GrantRecord(
-                id=str(r["id"]),
-                subject_type=str(r["subject_type"]),  # type: ignore[arg-type]
-                subject_id=str(r["subject_id"]),
-                capability=str(r["capability"]),
-                scope=json.loads(str(r["scope_json"])),
-                expires_at=datetime.fromisoformat(str(r["expires_at"])) if r["expires_at"] else None,
-                revoked_at=datetime.fromisoformat(str(r["revoked_at"])) if r["revoked_at"] else None,
-                revision=int(r["revision"]),
-            )
-            for r in rows
-        )
+        grants = _load_all_grants()
         session = SessionContext(
             session_id=body.session_id,
             actor_ref=body.actor_ref,
             channel=body.channel,
             modality=body.modality,
-            is_os_locked=body.is_os_locked,
+            is_os_locked=active_container.effective_os_locked(body.is_os_locked),
             is_suspended=body.is_suspended,
             is_muted=body.is_muted,
             offline_mode=active_cfg.ai.offline_mode,
@@ -1169,6 +1896,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             actor_ref=actor_ref,
             channel=body.channel,
             modality=body.modality,
+            is_os_locked=active_container.effective_os_locked(),
         )
         try:
             final_state = active_container.approval_service.decide(
@@ -1181,21 +1909,173 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
     @app.post("/v1/session/lock")
     async def lock_session(body: SessionLockBody, request: Request) -> dict[str, Any]:
         corr = _corr(request)
+        active_container.manual_os_locked = True
         active_container.voice_service.on_session_locked()
+        active_container.live_voice_engine.stop_speaking()
+        active_container.live_voice_engine.set_mode("muted")
         closed_cameras = active_container.camera_service.stop_and_revoke_all(
             reason=body.reason, correlation_id=corr
         )
         active_container.remote_gateway_service.set_os_lock_state(True)
+        active_container.turn_orchestrator.clear_session_history()
+        active_container.file_index_service.working_set.clear_session()
         canceled = active_container.approval_service.cancel_all_pending_on_lock(
             reason=body.reason, correlation_id=corr
         )
         return {
             "schema_version": 1,
+            "locked": True,
             "canceled_approvals": canceled,
             "closed_cameras": closed_cameras,
         }
 
+    @app.post("/v1/session/unlock")
+    async def unlock_session(request: Request) -> Response:
+        if active_container.os_lock_probe():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Workstation is still locked at OS level; cannot unlock Core session.",
+                correlation_id=_corr(request),
+            )
+        active_container.manual_os_locked = False
+        active_container.remote_gateway_service.set_os_lock_state(False)
+        return JSONResponse({"schema_version": 1, "locked": False})
+
+    def _serialize_live_voice_status() -> dict[str, Any]:
+        vs = active_container.live_voice_engine.snapshot()
+        llm = active_container.local_llm_manager.status
+        return {
+            "schema_version": 1,
+            "mode": vs.mode,
+            "phase": vs.phase,
+            "amplitude": vs.amplitude,
+            "stt_ready": vs.stt_ready,
+            "stt_model": vs.stt_model,
+            "tts_ready": vs.tts_ready,
+            "tts_model": vs.tts_model,
+            "mic_available": vs.mic_available,
+            "active_command_window": vs.active_command_window,
+            "session_active": vs.session_active,
+            "session_seconds_left": vs.session_seconds_left,
+            "vad_engine": vs.vad_engine,
+            "wake_engine": vs.wake_engine,
+            "last_transcript": vs.last_transcript,
+            "last_reply": vs.last_reply,
+            "last_route_kind": vs.last_route_kind,
+            "last_llm_called": vs.last_llm_called,
+            "error": vs.error,
+            "llm_ready": llm.ready,
+            "llm_starting": llm.starting,
+            "llm_model": llm.model_name,
+            "llm_backend": llm.backend,
+            "llm_note": llm.note,
+        }
+
+    @app.get("/v1/voice/live-status")
+    async def get_live_voice_status() -> dict[str, Any]:
+        return _serialize_live_voice_status()
+
+    @app.post("/v1/voice/arm")
+    async def arm_live_voice(body: ArmLiveVoiceBody) -> dict[str, Any]:
+        active_container.voice_service.bind_live_hook(active_container.live_voice_engine)
+        active_container.live_voice_engine.set_mode(body.mode)
+        return _serialize_live_voice_status()
+
+    @app.post("/v1/voice/stop-speaking")
+    async def stop_live_speaking() -> dict[str, Any]:
+        gen = active_container.live_voice_engine.stop_speaking()
+        return {"schema_version": 1, "stopped": True, "playback_generation": gen}
+
+    @app.get("/v1/voice/diagnostics")
+    async def get_voice_diagnostics() -> dict[str, Any]:
+        """Voice Lab live audio diagnostics, echo-guard status, installed voices & timing trace (B11/B12)."""
+        snap = active_container.voice_service.get_state()
+        diag = active_container.live_voice_engine.get_diagnostics()
+        return {
+            "schema_version": 1,
+            "diagnostics": diag,
+            "endpoints": [e.model_dump(mode="json") for e in snap.endpoints],
+            "installed_os_voices": [v.model_dump(mode="json") for v in snap.installed_voices],
+        }
+
+    @app.put("/v1/audio/speech-rate")
+    async def set_audio_speech_rate(body: SetSpeechRateBody, request: Request) -> dict[str, Any]:
+        active = active_container.config_service.get_active().document
+        updated = active.model_copy(
+            update={"audio": active.audio.model_copy(update={"speech_rate": body.speech_rate})}
+        )
+        active_container.config_service.save_revision(
+            updated, source="user", correlation_id=_corr(request)
+        )
+        active_container.voice_service.bind_live_hook(active_container.live_voice_engine)
+        return {"schema_version": 1, "speech_rate": body.speech_rate}
+
+    @app.post("/v1/voice/replay-transcript")
+    async def replay_voice_transcript(body: ReplayTranscriptBody, request: Request) -> Response:
+        """Manual transcript correction/replay strictly routed through shared TurnOrchestrator + PolicyEngine (B11)."""
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        result = await active_container.turn_orchestrator.submit_turn(
+            body.transcript, session=session, correlation_id=_corr(request)
+        )
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "request_id": result.request_id,
+            "state": result.state.value,
+            "route_kind": result.route_kind,
+            "reply": result.reply,
+            "llm_called": result.llm_called,
+            "steps": [
+                {
+                    "tool_id": s.tool_id,
+                    "tool_version": s.tool_version,
+                    "state": s.state.value,
+                    "verified": s.verified,
+                    "summary": s.summary,
+                    "error_code": s.error_code.value if s.error_code else None,
+                    "data": s.data,
+                }
+                for s in result.steps
+            ],
+            "approval": result.approval.model_dump(mode="json") if result.approval else None,
+        }
+        if result.state == ActionOutcomeState.AWAITING_APPROVAL:
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+        if result.state == ActionOutcomeState.FAILED and result.error_code is not None:
+            return _error_response(
+                code=result.error_code, message=result.reply, correlation_id=_corr(request)
+            )
+        if result.state == ActionOutcomeState.COMPLETED and body.speak_reply and result.reply:
+            active_container.live_voice_engine.speak_async(result.reply)
+        return JSONResponse(content=payload)
+
     # --- Phase 3: Turn Orchestration (Deterministic-First + Bounded LLM) ---
+
+    @app.post("/v1/requests/cancel")
+    async def cancel_active_request(
+        body: CancelRequestBody, request: Request
+    ) -> dict[str, Any]:
+        """Cancel active voice/turn activity cleanly without stopping Core (IR-08, B07)."""
+        corr = _corr(request)
+        active_container.live_voice_engine.stop_speaking()
+        active_container.event_bus.publish(
+            event_type="request.state_changed",
+            correlation_id=corr,
+            request_id=body.request_id,
+            payload={"state": "Idle", "canceled": True},
+        )
+        return {
+            "schema_version": 1,
+            "canceled": True,
+            "request_id": body.request_id,
+        }
 
     @app.post("/v1/requests")
     async def submit_turn(body: SubmitTurnBody, request: Request) -> Response:
@@ -1205,7 +2085,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             actor_ref=body.actor_ref,
             channel=body.channel,
             modality=body.modality,
-            is_os_locked=body.is_os_locked,
+            is_os_locked=active_container.effective_os_locked(body.is_os_locked),
             is_suspended=body.is_suspended,
             is_muted=body.is_muted,
             offline_mode=cfg.ai.offline_mode,
@@ -1240,6 +2120,8 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
             return _error_response(
                 code=result.error_code, message=result.reply, correlation_id=_corr(request)
             )
+        if result.state == ActionOutcomeState.COMPLETED and body.speak_reply and result.reply:
+            active_container.live_voice_engine.speak_async(result.reply)
         return JSONResponse(content=payload)
 
     # --- Phase 3: Providers, Model Manifests & Atomic AI Profiles ---
@@ -1408,6 +2290,23 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         )
         return {"schema_version": 1, "memories": [m.model_dump(mode="json") for m in items]}
 
+    @app.get("/v1/memories/inspector")
+    async def get_memory_inspector(
+        session_id: str = Query(default="local-session-1"),
+    ) -> dict[str, Any]:
+        """Return bounded provenance of memories that influenced the latest turn (B13)."""
+        return {
+            "schema_version": 1,
+            "session_id": session_id,
+            "influenced_memories": active_container.context_service.get_last_memory_inspector(
+                session_id
+            ),
+            "user_aliases": active_container.memory_service.get_user_app_aliases(),
+            "session_untrusted_taint": active_container.context_service.is_session_tainted(
+                session_id
+            ),
+        }
+
     @app.post("/v1/memories")
     async def create_memory(body: CreateMemoryBody, request: Request) -> Response:
         try:
@@ -1495,6 +2394,18 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         except ReminderServiceError as exc:
             return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
+    @app.get("/v1/scheduler/status")
+    async def get_scheduler_status() -> dict[str, Any]:
+        """Return background reminder scheduler health & tick counter (B15)."""
+        snap = active_container.scheduler_runner.snapshot()
+        return {
+            "schema_version": 1,
+            "running": snap.running,
+            "tick_count": snap.tick_count,
+            "total_processed": snap.total_processed,
+            "last_tick_utc": snap.last_tick_utc,
+        }
+
     @app.post("/v1/reminders/process-due")
     async def process_due_reminders(request: Request) -> dict[str, Any]:
         outcomes = active_container.reminder_service.process_due_reminders(
@@ -1568,8 +2479,10 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
     @app.post("/v1/roots/{root_id}/sync")
     async def sync_knowledge_root(root_id: str, request: Request) -> Response:
         try:
-            summary = active_container.knowledge_service.sync_source_root(
-                root_id, correlation_id=_corr(request)
+            summary = await asyncio.to_thread(
+                active_container.knowledge_service.sync_source_root,
+                root_id,
+                correlation_id=_corr(request),
             )
             return JSONResponse(
                 {
@@ -1593,15 +2506,367 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         )
         return {"schema_version": 1, **res.model_dump(mode="json")}
 
-    # --- Phase 4 (R2): Pluggable Web Search & Anti-SSRF Fetch ---
+    # --- Stage G2 (B09 & B10): Dynamic Native App Catalog & Layer-1 Scoped File Intelligence ---
+
+    @app.get("/v1/apps")
+    async def list_installed_apps() -> dict[str, Any]:
+        entries = await asyncio.to_thread(active_container.app_catalog.list_apps)
+        return {
+            "schema_version": 1,
+            "count": len(entries),
+            "apps": [
+                {
+                    "app_id": e.app_id,
+                    "display_name": e.display_name,
+                    "activation_kind": e.activation_kind,
+                    "aliases": list(e.aliases),
+                    "source": e.source,
+                    "trust_class": e.trust_class,
+                }
+                for e in entries
+            ],
+        }
+
+    @app.post("/v1/apps/refresh")
+    async def refresh_installed_apps() -> dict[str, Any]:
+        entries = await asyncio.to_thread(active_container.app_catalog.refresh)
+        return {"schema_version": 1, "count": len(entries)}
+
+    @app.post("/v1/files/index/{root_id}")
+    async def index_authorized_files(root_id: str, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; file indexing denied.",
+                correlation_id=_corr(request),
+            )
+        try:
+            summary = await asyncio.to_thread(
+                active_container.file_index_service.scan_authorized_root, root_id
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "root_id": summary.root_id,
+                    "indexed_files": summary.indexed_files,
+                    "removed_stale": summary.removed_stale,
+                    "skipped_excluded": summary.skipped_excluded,
+                    "skipped_reparse_points": summary.skipped_reparse_points,
+                    "permission_errors": summary.permission_errors,
+                    "availability": summary.availability,
+                    "elapsed_ms": summary.elapsed_ms,
+                }
+            )
+        except FileIndexError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/files/search")
+    async def search_indexed_files(body: FileSearchBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        decision = active_container.policy_engine.evaluate_step(
+            tool_id="fs.metadata.search",
+            tool_version=1,
+            args={"query": body.query, "ext": body.ext},
+            session=session,
+            grants=_load_all_grants(),
+            now_utc=active_container.clock.now_utc(),
+        )
+        if not decision.allowed and decision.error_code is not None:
+            return _error_response(
+                code=decision.error_code, message=decision.reason, correlation_id=_corr(request)
+            )
+        res = await asyncio.to_thread(
+            active_container.file_index_service.search_metadata,
+            body.query,
+            ext=body.ext,
+            modified_after_utc=body.modified_after_utc,
+            limit=body.limit,
+            session_id=body.session_id,
+        )
+        return JSONResponse(
+            {
+                "schema_version": 1,
+                "query": res.query,
+                "active_roots_count": res.active_roots_count,
+                "total_candidates_scanned": res.total_candidates_scanned,
+                "elapsed_ms": res.elapsed_ms,
+                "hits": [
+                    {
+                        "index": i,
+                        "file_id": h.file_id,
+                        "root_id": h.root_id,
+                        "display_name": h.display_name,
+                        "relative_path": h.relative_path,
+                        "ext": h.ext,
+                        "size_bytes": h.size_bytes,
+                        "mtime_ns": h.mtime_ns,
+                        "availability": h.availability,
+                        "score": h.score,
+                    }
+                    for i, h in enumerate(res.hits, start=1)
+                ],
+            }
+        )
+
+    @app.post("/v1/files/open")
+    async def open_indexed_file(body: FileOpenBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        decision = active_container.policy_engine.evaluate_step(
+            tool_id="fs.file.open",
+            tool_version=1,
+            args={"file_query": body.file_query, "result_index": body.result_index},
+            session=session,
+            grants=_load_all_grants(),
+            now_utc=active_container.clock.now_utc(),
+        )
+        if not decision.allowed and decision.error_code is not None:
+            return _error_response(
+                code=decision.error_code, message=decision.reason, correlation_id=_corr(request)
+            )
+        target_hit = None
+        if body.result_index is not None:
+            target_hit = active_container.file_index_service.resolve_working_set_index(
+                body.session_id, body.result_index
+            )
+        elif body.file_query:
+            sres = active_container.file_index_service.search_metadata(
+                body.file_query, limit=3, session_id=body.session_id
+            )
+            live = [h for h in sres.hits if h.availability == "available"]
+            if live:
+                target_hit = live[0]
+        if target_hit is None:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message="Requested file was not found in authorized indexed roots.",
+                correlation_id=_corr(request),
+            )
+        receipt = active_container.file_index_service.open_file(target_hit)
+        if receipt.verification_kind == "prohibited":
+            return _error_response(
+                code=ErrorCode.DENIED, message=receipt.detail, correlation_id=_corr(request)
+            )
+        if receipt.verification_kind == "not_found":
+            return _error_response(
+                code=ErrorCode.NOT_FOUND, message=receipt.detail, correlation_id=_corr(request)
+            )
+        return JSONResponse(
+            {
+                "schema_version": 1,
+                "opened": receipt.opened,
+                "display_name": target_hit.display_name,
+                "relative_path": target_hit.relative_path,
+                "verification_kind": receipt.verification_kind,
+                "detail": receipt.detail,
+            }
+        )
+
+    # --- Stage G4 (B14, Decision A2): Tier-2 GUI Diff File Edit & Same-Scope No-Overwrite Move ---
+
+    @app.post("/v1/files/edit/propose")
+    async def propose_file_edit(body: ProposeFileEditBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            challenge, diff_preview = active_container.file_mutation_service.propose_file_edit(
+                root_id=body.root_id,
+                relative_path=body.relative_path,
+                new_content=body.new_content,
+                session=session,
+                grants=_load_all_grants(),
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "schema_version": 1,
+                    "requires_approval": True,
+                    "approval": challenge.model_dump(mode="json"),
+                    "diff_preview": diff_preview,
+                },
+            )
+        except FileMutationError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/files/edit/apply")
+    async def apply_file_edit(body: ApplyFileMutationBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            receipt = active_container.file_mutation_service.apply_approved_file_edit(
+                approval_id=body.approval_id,
+                session=session,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "tool_id": receipt.tool_id,
+                    "verified": receipt.verified,
+                    "canonical_path": receipt.canonical_path,
+                    "sha256": receipt.sha256,
+                    "summary": receipt.summary,
+                }
+            )
+        except FileMutationError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/files/move/propose")
+    async def propose_file_move(body: ProposeFileMoveBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            challenge = active_container.file_mutation_service.propose_file_move(
+                root_id=body.root_id,
+                source_relative_path=body.source_relative_path,
+                target_relative_path=body.target_relative_path,
+                session=session,
+                grants=_load_all_grants(),
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "schema_version": 1,
+                    "requires_approval": True,
+                    "approval": challenge.model_dump(mode="json"),
+                },
+            )
+        except FileMutationError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/files/move/apply")
+    async def apply_file_move(body: ApplyFileMutationBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            receipt = active_container.file_mutation_service.apply_approved_file_move(
+                approval_id=body.approval_id,
+                session=session,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                {
+                    "schema_version": 1,
+                    "tool_id": receipt.tool_id,
+                    "verified": receipt.verified,
+                    "canonical_path": receipt.canonical_path,
+                    "sha256": receipt.sha256,
+                    "summary": receipt.summary,
+                }
+            )
+        except FileMutationError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    # --- Phase 4 (R2) + Stage G7 (B26): Pluggable Web Search & Anti-SSRF Fetch ---
+
+    @app.get("/v1/web/provider")
+    async def get_web_provider_state() -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "provider": active_container.web_service.get_provider_consent_state().model_dump(mode="json"),
+        }
+
+    @app.put("/v1/web/provider")
+    async def configure_web_provider(body: WebProviderConfigBody, request: Request) -> Response:
+        try:
+            provider = SearxngWebSearchProvider(
+                endpoint_url=body.endpoint_url,
+                clock=active_container.clock,
+                provider_name=body.provider_name,
+                allow_loopback_searxng=body.allow_loopback_searxng,
+            )
+            st = active_container.web_service.configure_search_provider(
+                provider=provider,
+                endpoint_url=provider.endpoint_url,
+                consent_acknowledged=body.consent_acknowledged,
+                allow_loopback_searxng=body.allow_loopback_searxng,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "provider": st.model_dump(mode="json")})
+        except WebSearchError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/web/provider")
+    async def revoke_web_provider(request: Request) -> dict[str, Any]:
+        st = active_container.web_service.revoke_search_provider(correlation_id=_corr(request))
+        return {"schema_version": 1, "provider": st.model_dump(mode="json")}
 
     @app.post("/v1/web/query")
     async def web_query(body: WebQueryBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        if not cfg.ai.offline_mode:
+            session = SessionContext(
+                session_id=body.session_id,
+                actor_ref="local_owner",
+                channel=ChannelKind.LOCAL,
+                modality=InputModality.TRUSTED_UI,
+                is_os_locked=active_container.effective_os_locked(),
+                offline_mode=cfg.ai.offline_mode,
+            )
+            decision = active_container.policy_engine.evaluate_step(
+                tool_id="web.search.query",
+                tool_version=1,
+                args={"query": body.query},
+                session=session,
+                grants=_load_all_grants(),
+                now_utc=active_container.clock.now_utc(),
+            )
+            if not decision.allowed and decision.error_code is not None:
+                return _error_response(
+                    code=decision.error_code, message=decision.reason, correlation_id=_corr(request)
+                )
         try:
             res = await active_container.web_service.query_web(
                 body.query,
                 limit=body.limit,
                 private_query_approved=body.private_query_approved,
+                allow_stale_cache_when_offline=body.allow_stale_cache_when_offline,
+                session_id=body.session_id,
                 correlation_id=_corr(request),
             )
             return JSONResponse({"schema_version": 1, **res})
@@ -1610,9 +2875,33 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/web/fetch")
     async def web_fetch(body: WebFetchBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        decision = active_container.policy_engine.evaluate_step(
+            tool_id="web.search.query",
+            tool_version=1,
+            args={"url": body.url},
+            session=session,
+            grants=_load_all_grants(),
+            now_utc=active_container.clock.now_utc(),
+        )
+        if not decision.allowed and decision.error_code is not None:
+            return _error_response(
+                code=decision.error_code, message=decision.reason, correlation_id=_corr(request)
+            )
         try:
             page = await active_container.web_service.fetch_page(
-                body.url, require_https=body.require_https, correlation_id=_corr(request)
+                body.url,
+                require_https=body.require_https,
+                session_id=body.session_id,
+                correlation_id=_corr(request),
             )
             return JSONResponse(
                 {
@@ -1632,13 +2921,28 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/screen/analyze")
     async def analyze_screen(body: ScreenAnalyzeBody, request: Request) -> Response:
+        cfg = active_container.config_service.get_active().document
         session = SessionContext(
             session_id=body.session_id,
             actor_ref=body.actor_ref,
             channel=ChannelKind.LOCAL,
             modality=InputModality.TRUSTED_UI,
-            is_os_locked=body.is_os_locked,
+            is_os_locked=active_container.effective_os_locked(body.is_os_locked),
+            offline_mode=cfg.ai.offline_mode,
         )
+        # B02 / IR-03: direct REST screen capture MUST pass PolicyEngine screen.read grant check
+        decision = active_container.policy_engine.evaluate_step(
+            tool_id="screen.analyze",
+            tool_version=1,
+            args={"window_selector": body.window_selector},
+            session=session,
+            grants=_load_all_grants(),
+            now_utc=active_container.clock.now_utc(),
+        )
+        if not decision.allowed and decision.error_code is not None:
+            return _error_response(
+                code=decision.error_code, message=decision.reason, correlation_id=_corr(request)
+            )
         try:
             res = active_container.screen_service.analyze_window(
                 body.window_selector,
@@ -1812,36 +3116,28 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         workflow_id: str, body: ExecuteWorkflowBody, request: Request
     ) -> Response:
         cfg = active_container.config_service.get_active().document
-        with active_container.db.core_read() as conn:
-            rows = conn.execute(
-                "SELECT id, subject_type, subject_id, capability, scope_json, expires_at, revoked_at, revision FROM grant"
-            ).fetchall()
-        grants = tuple(
-            GrantRecord(
-                id=str(r["id"]),
-                subject_type=str(r["subject_type"]),  # type: ignore[arg-type]
-                subject_id=str(r["subject_id"]),
-                capability=str(r["capability"]),
-                scope=json.loads(str(r["scope_json"])),
-                expires_at=datetime.fromisoformat(str(r["expires_at"])) if r["expires_at"] else None,
-                revoked_at=datetime.fromisoformat(str(r["revoked_at"])) if r["revoked_at"] else None,
-                revision=int(r["revision"]),
-            )
-            for r in rows
-        )
+        grants = _load_all_grants()
         session = SessionContext(
             session_id=body.session_id,
             actor_ref=body.actor_ref,
             channel=ChannelKind.LOCAL,
             modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
             offline_mode=cfg.ai.offline_mode,
         )
+        if session.is_os_locked:
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; workflow execution denied.",
+                correlation_id=_corr(request),
+            )
         try:
-            res = active_container.workflow_service.execute_workflow(
+            res = await active_container.workflow_service.execute_workflow_async(
                 workflow_id,
                 session=session,
                 grants=grants,
                 approved_bound_hash=body.approved_bound_hash,
+                approval_id=body.approval_id,
                 cancel_after_step=body.cancel_after_step,
                 simulate_unknown_at_step=body.simulate_unknown_at_step,
                 correlation_id=_corr(request),
@@ -1925,11 +3221,125 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         except EcosystemServiceError as exc:
             return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
 
+    # --- Stage G6 (B23): Hardened Opt-In MCP Host (Read-Only Pilot, Rug-Pull Pinning & Kill Switch) ---
+
+    @app.get("/v1/mcp/servers")
+    async def list_mcp_servers() -> dict[str, Any]:
+        servers = active_container.mcp_host_service.list_servers()
+        return {"schema_version": 1, "servers": [s.model_dump(mode="json") for s in servers]}
+
+    @app.post("/v1/mcp/servers")
+    async def register_mcp_server(body: McpServerRegistration, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; MCP server registration denied.",
+                correlation_id=_corr(request),
+            )
+        try:
+            rec = active_container.mcp_host_service.register_server(
+                body, correlation_id=_corr(request)
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "server": rec.model_dump(mode="json")},
+            )
+        except McpHostError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/mcp/servers/{server_id}/discover")
+    async def discover_mcp_server_tools(server_id: str, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; MCP tool discovery denied.",
+                correlation_id=_corr(request),
+            )
+        try:
+            rec = await asyncio.to_thread(
+                active_container.mcp_host_service.discover_and_pin_tools,
+                server_id,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "server": rec.model_dump(mode="json")})
+        except McpHostError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.put("/v1/mcp/servers/{server_id}/toggle")
+    async def toggle_mcp_server(
+        server_id: str, body: ToggleMcpServerBody, request: Request
+    ) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; MCP server toggle denied.",
+                correlation_id=_corr(request),
+            )
+        try:
+            rec = active_container.mcp_host_service.set_server_enabled(
+                server_id, enabled=body.enabled, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, "server": rec.model_dump(mode="json")})
+        except McpHostError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/mcp/servers/{server_id}/call")
+    async def call_mcp_tool(
+        server_id: str, body: CallMcpToolBody, request: Request
+    ) -> Response:
+        cfg = active_container.config_service.get_active().document
+        session = SessionContext(
+            session_id=body.session_id,
+            actor_ref="local_owner",
+            channel=ChannelKind.LOCAL,
+            modality=InputModality.TRUSTED_UI,
+            is_os_locked=active_container.effective_os_locked(),
+            offline_mode=cfg.ai.offline_mode,
+        )
+        try:
+            res = await asyncio.to_thread(
+                active_container.mcp_host_service.invoke_tool,
+                server_id,
+                body.tool_name,
+                body.arguments,
+                session=session,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "result": res.model_dump(mode="json")})
+        except McpHostError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/mcp/kill-switch")
+    async def trigger_mcp_kill_switch(request: Request) -> dict[str, Any]:
+        counts = active_container.mcp_host_service.kill_all_servers(correlation_id=_corr(request))
+        return {"schema_version": 1, **counts}
+
     # --- Phase 5 (R3): On-Demand Camera, Home Assistant Allowlist, Private Remote Gateway & Preference Proposals ---
 
     @app.get("/v1/camera/state")
     async def get_camera_state() -> dict[str, Any]:
         return {"schema_version": 1, "camera": active_container.camera_service.get_state().model_dump(mode="json")}
+
+    @app.get("/v1/camera/devices")
+    async def list_camera_devices() -> dict[str, Any]:
+        """Non-invasively list local camera devices without opening video streams (Stage G7, FR-IOT-01)."""
+        port = active_container.camera_service._capture_port
+        if isinstance(port, WindowsOnDemandCameraAdapter):
+            devs = await asyncio.to_thread(port.list_devices)
+            return {
+                "schema_version": 1,
+                "backend_ready": port.is_capture_backend_ready(),
+                "devices": [
+                    {
+                        "device_id": d.device_id,
+                        "friendly_name": d.friendly_name,
+                        "status": d.status,
+                        "capture_backend_ready": d.capture_backend_ready,
+                    }
+                    for d in devs
+                ],
+            }
+        return {"schema_version": 1, "backend_ready": False, "devices": []}
 
     @app.post("/v1/camera/grant")
     async def grant_camera_session(body: CameraGrantBody, request: Request) -> Response:
@@ -1938,7 +3348,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 session_id=body.session_id,
                 device_id=body.device_id,
                 explicit_local_consent=body.explicit_local_consent,
-                is_os_locked=body.is_os_locked,
+                is_os_locked=active_container.effective_os_locked(body.is_os_locked),
                 correlation_id=_corr(request),
             )
             return JSONResponse({"schema_version": 1, "camera": st.model_dump(mode="json")})
@@ -1953,7 +3363,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 device_id=body.device_id,
                 explicit_user_request=body.explicit_user_request,
                 channel="local",
-                is_os_locked=body.is_os_locked,
+                is_os_locked=active_container.effective_os_locked(body.is_os_locked),
                 is_suspended=body.is_suspended,
                 correlation_id=_corr(request),
             )
@@ -1972,6 +3382,122 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
     async def list_ha_entities() -> dict[str, Any]:
         items = active_container.ha_service.list_allowlisted_entities()
         return {"schema_version": 1, "entities": [e.model_dump(mode="json") for e in items]}
+
+    @app.put("/v1/iot/ha/connect")
+    async def connect_ha_bridge(body: HaConnectBody, request: Request) -> Response:
+        try:
+            if active_container.vault.get_secret(body.credential_vault_ref) is None:
+                return _error_response(
+                    code=ErrorCode.NOT_FOUND,
+                    message=f"Vault credential '{body.credential_vault_ref}' not found in OS Credential Vault.",
+                    correlation_id=_corr(request),
+                )
+            client = PrivateLanHomeAssistantClient(
+                base_url=body.base_url,
+                vault=active_container.vault,
+                credential_vault_ref=body.credential_vault_ref,
+                clock=active_container.clock,
+                allow_loopback_http=body.allow_loopback_http,
+            )
+            res = active_container.ha_service.configure_connection(
+                client=client,
+                endpoint_url=client.base_url,
+                credential_vault_ref=body.credential_vault_ref,
+                consent_acknowledged=body.consent_acknowledged,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, **res})
+        except HomeAssistantError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/iot/ha/connect")
+    async def disconnect_ha_bridge(request: Request) -> dict[str, Any]:
+        res = active_container.ha_service.disconnect_connection(correlation_id=_corr(request))
+        return {"schema_version": 1, **res}
+
+    # --- Stage G7 (B26): Opt-In Read-Only OAuth 2.0 PKCE Calendar & Email Connectors (FR-LIF-04) ---
+
+    @app.get("/v1/connectors/oauth")
+    async def list_oauth_connectors() -> dict[str, Any]:
+        items = active_container.oauth_connector_service.list_connectors()
+        return {"schema_version": 1, "connectors": [c.model_dump(mode="json") for c in items]}
+
+    @app.post("/v1/connectors/oauth/start")
+    async def start_oauth_pkce(body: OAuthStartBody, request: Request) -> Response:
+        try:
+            started = active_container.oauth_connector_service.start_pkce_authorization(
+                connector_id=body.connector_id,
+                kind=body.kind,  # type: ignore[arg-type]
+                provider_name=body.provider_name,
+                authorize_url=body.authorize_url,
+                token_url=body.token_url,
+                api_base_url=body.api_base_url,
+                redirect_uri=body.redirect_uri,
+                client_id=body.client_id,
+                scopes=body.scopes,
+                consent_acknowledged=body.consent_acknowledged,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={"schema_version": 1, "pkce": started.model_dump(mode="json")},
+            )
+        except OAuthConnectorError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/connectors/oauth/complete")
+    async def complete_oauth_pkce(body: OAuthCompleteBody, request: Request) -> Response:
+        try:
+            view = await active_container.oauth_connector_service.complete_pkce_callback(
+                state_nonce=body.state_nonce,
+                authorization_code=body.authorization_code,
+                code_verifier=body.code_verifier,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse({"schema_version": 1, "connector": view.model_dump(mode="json")})
+        except OAuthConnectorError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.post("/v1/connectors/oauth/{connector_id}/sync-calendar")
+    async def sync_oauth_calendar(
+        connector_id: str,
+        request: Request,
+        session_id: str = Query(default="local-session-1", min_length=1, max_length=64),
+    ) -> Response:
+        try:
+            res = await active_container.oauth_connector_service.sync_readonly_calendar(
+                connector_id, session_id=session_id, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, **res})
+        except OAuthConnectorError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.get("/v1/connectors/oauth/{connector_id}/mail-headers")
+    async def list_oauth_mail_headers(
+        connector_id: str,
+        request: Request,
+        session_id: str = Query(default="local-session-1", min_length=1, max_length=64),
+    ) -> Response:
+        try:
+            res = await active_container.oauth_connector_service.list_readonly_mail_headers(
+                connector_id, session_id=session_id, correlation_id=_corr(request)
+            )
+            return JSONResponse({"schema_version": 1, **res})
+        except OAuthConnectorError as exc:
+            return _error_response(code=exc.code, message=str(exc), correlation_id=_corr(request))
+
+    @app.delete("/v1/connectors/oauth/{connector_id}")
+    async def revoke_oauth_connector(connector_id: str, request: Request) -> Response:
+        ok = active_container.oauth_connector_service.revoke_connector(
+            connector_id, correlation_id=_corr(request)
+        )
+        if not ok:
+            return _error_response(
+                code=ErrorCode.NOT_FOUND,
+                message=f"OAuth connector '{connector_id}' not found.",
+                correlation_id=_corr(request),
+            )
+        return JSONResponse({"schema_version": 1, "revoked": True})
 
     @app.post("/v1/iot/ha/entities")
     async def add_ha_entity(body: HaAllowlistBody, request: Request) -> Response:
@@ -1999,7 +3525,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 params=body.params,
                 offline_mode=cfg.ai.offline_mode,
                 channel="local",
-                is_os_locked=body.is_os_locked,
+                is_os_locked=active_container.effective_os_locked(body.is_os_locked),
                 correlation_id=_corr(request),
             )
             return JSONResponse({"schema_version": 1, "result": res.model_dump(mode="json")})
@@ -2011,8 +3537,44 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
         cfg = active_container.remote_gateway_service.get_config()
         return {"schema_version": 1, "gateway": cfg.model_dump(mode="json")}
 
+    @app.post("/v1/remote/tls/provision")
+    async def provision_remote_tls(body: RemoteTlsProvisionBody, request: Request) -> Response:
+        try:
+            mat = active_container.remote_gateway_service.provision_tls_certificate(
+                bind_address=body.bind_address,
+                validity_days=body.validity_days,
+                correlation_id=_corr(request),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_201_CREATED,
+                content={
+                    "schema_version": 1,
+                    "tls": {
+                        "bind_address": mat.bind_address,
+                        "fingerprint_sha256": mat.fingerprint_sha256,
+                        "not_before_utc": mat.not_before_utc.isoformat(),
+                        "not_after_utc": mat.not_after_utc.isoformat(),
+                    },
+                },
+            )
+        except RemoteGatewayError as exc:
+            return _error_response(
+                code=exc.code, message=str(exc), correlation_id=_corr(request), http_status=exc.http_status
+            )
+
     @app.put("/v1/remote/config")
     async def configure_remote_gateway(body: RemoteGatewayConfigBody, request: Request) -> Response:
+        if active_container.settings.env != "test" and body.enabled:
+            tls_ok, tls_reason = active_container.remote_gateway_service.verify_provisioned_tls(
+                body.tls_cert_fingerprint_sha256
+            )
+            if not tls_ok:
+                return _error_response(
+                    code=ErrorCode.UNSUPPORTED,
+                    message=f"Remote gateway activation requires verified local TLS certificate provisioning: {tls_reason}",
+                    correlation_id=_corr(request),
+                    http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
         try:
             cfg = active_container.remote_gateway_service.configure_gateway(
                 enabled=body.enabled,
@@ -2061,7 +3623,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 scopes=body.scopes,
                 token_ttl_hours=body.token_ttl_hours,
                 channel="local",
-                is_os_locked=body.is_os_locked,
+                is_os_locked=active_container.effective_os_locked(body.is_os_locked),
                 correlation_id=_corr(request),
             )
             return JSONResponse({"schema_version": 1, "receipt": receipt.model_dump(mode="json")})
@@ -2112,7 +3674,7 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
                 proposal_id,
                 decision=body.decision,  # type: ignore[arg-type]
                 channel="local",
-                is_os_locked=body.is_os_locked,
+                is_os_locked=active_container.effective_os_locked(body.is_os_locked),
                 correlation_id=_corr(request),
             )
             return JSONResponse({"schema_version": 1, "proposal": prop.model_dump(mode="json")})
@@ -2149,9 +3711,18 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
     @app.post("/v1/backups/create")
     async def create_backup(body: BackupCreateBody, request: Request) -> Response:
+        if active_container.effective_os_locked():
+            return _error_response(
+                code=ErrorCode.DENIED,
+                message="Session is locked; backup creation denied.",
+                correlation_id=_corr(request),
+            )
         try:
-            meta = active_container.backup_service.create_backup(
-                Path(body.archive_path), body.recovery_passphrase, correlation_id=_corr(request)
+            meta = await asyncio.to_thread(
+                active_container.backup_service.create_backup,
+                Path(body.archive_path),
+                body.recovery_passphrase,
+                correlation_id=_corr(request),
             )
             return JSONResponse(
                 status_code=status.HTTP_201_CREATED,
@@ -2215,7 +3786,16 @@ def create_app(container: CoreContainer | None = None) -> FastAPI:
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    # Convert FastAPI validation errors into standard ErrorEnvelope
+    # Convert FastAPI validation and HTTP errors into standard ErrorEnvelope (DEF-22, B05)
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_exc(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return _error_response(
+            code=ErrorCode.INVALID_ARGS,
+            message=f"Request validation failed: {len(exc.errors())} invalid field(s).",
+            correlation_id=_corr(request),
+            http_status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
     @app.exception_handler(HTTPException)
     async def handle_http_exc(request: Request, exc: HTTPException) -> JSONResponse:
         return _error_response(

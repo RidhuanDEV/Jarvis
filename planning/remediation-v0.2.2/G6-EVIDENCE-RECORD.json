@@ -1,0 +1,130 @@
+{
+  "gate_id": "G6",
+  "stage_name": "Offline Bilingual Evaluation Harness, Hardened Opt-In MCP Host & Evidence-Gated Adaptation Review (B22, B23, B25)",
+  "generated_at_utc": "2026-11-27T11:20:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "git_diff_bytes": 527555,
+  "git_diff_sha256": "792fa524b64fc04a64de8b09f64b246a1677e6bb3f6fc5d06824509eafe4a030",
+  "readiness_level": "VERIFIED-LOCAL",
+  "owner_decisions_preserved": {
+    "A1_gate_by_gate_pause": true,
+    "A2_file_move_g4_tier2_gui_diff_same_scope_no_overwrite": true,
+    "A3_owner_ui_privacy_delete_only_never_llm_voice_mcp": true,
+    "A4_direct_local_working_tree_zero_git_mutations": true
+  },
+  "completed_work_packages": [
+    {
+      "id": "B22",
+      "title": "Reproducible Offline Bilingual Evaluation Harness with Wilson CIs, Paired Bootstrap & Group-Disjoint Split Guard",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/domain/evaluation.py",
+        "evals/datasets/pilot_bilingual_v1.json",
+        "scripts/run_offline_eval.py",
+        "planning/remediation-v0.2.2/G6-EVAL-SCORECARD.json"
+      ],
+      "highlights": [
+        "Implemented pure-domain Wilson 95% CI, seeded Paired Bootstrap difference CI, WER/CER normalization, Intent Macro-F1, and split group-leakage detector.",
+        "Executed real held_out_test scorecard (24 cases, group_disjoint_verified=True): Intent Macro-F1=1.0, Entity Top-1=4/4, Negation Safety=4/4, R3 Denial=5/5, Unauthorized Execution=0/9, p95 routing latency=0.1514ms.",
+        "Surfaced & fixed colloquial Indonesian time phrasing ('pukul berapa sekarang ya?') in DeterministicRouter with verified precision/recall probes (recall_ok=True, precision_ok=True)."
+      ]
+    },
+    {
+      "id": "B23",
+      "title": "Hardened Opt-In MCP Host (Read-Only Pilot, SHA-256 Rug-Pull Quarantine, Stripped-Env Stdio Isolation, BR-15 Taint & MCP Manager UI)",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/migrations/core/0003_mcp_host.sql",
+        "core/jarvis/domain/mcp.py",
+        "core/jarvis/application/mcp_host_service.py",
+        "core/jarvis/infrastructure/mcp_stdio_transport.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src/lib/contracts.ts",
+        "apps/desktop/src/components/EcosystemPanels.tsx",
+        "apps/desktop/src/__tests__/g6_mcp_manager.test.tsx"
+      ],
+      "highlights": [
+        "Additive migration 0003_mcp_host.sql persists MCP server registry, schema SHA-256 pins, and quarantine status (default disabled).",
+        "Blocks R3 prohibited binaries/tools, rejects insecure remote HTTP, requires SHA-256 schema discovery before enabling, and auto-quarantines on mid-session tool description/schema rug-pulls.",
+        "Real local JSON-RPC 2.0 stdio transport uses stripped environment (verified ZERO JARVIS_AUTH_TOKEN leakage), bounded timeouts, output sanitization/wrapping, BR-15 session tainting blocking subsequent LLM-proposed native mutations (U-X01), and Global Kill Switch terminating child processes with ZERO orphans.",
+        "Added MCP Manager UI & Global Kill Switch inside EcosystemPanels with quarantine alert & disabled re-enable guard."
+      ]
+    },
+    {
+      "id": "B25",
+      "title": "Evidence-Gated Model Adaptation & Fine-Tuning Decision Record",
+      "status": "VERIFIED_GOVERNANCE",
+      "files": [
+        "planning/remediation-v0.2.2/B25-MODEL-ADAPTATION-DECISION.md"
+      ],
+      "highlights": [
+        "Evaluated G6-EVAL-SCORECARD.json against §14.2 decision tree: concluded NO FINE-TUNING NOW (zero model training or downloads performed without owner approval)."
+      ]
+    }
+  ],
+  "verification_results": {
+    "b22_held_out_eval": {
+      "status": "PASS",
+      "split": "held_out_test",
+      "total_cases": 24,
+      "failures": 0,
+      "intent_macro_f1": 1.0,
+      "unauthorized_execution_numerator": 0
+    },
+    "router_time_probes": {
+      "status": "PASS",
+      "recall_ok": true,
+      "precision_ok": true
+    },
+    "pytest": {
+      "status": "PASS",
+      "passed": 180,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 28.23
+    },
+    "ruff": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "mypy": {
+      "status": "PASS",
+      "files_checked": 77,
+      "errors": 0
+    },
+    "cargo_test": {
+      "status": "PASS",
+      "passed": 9,
+      "failed": 0
+    },
+    "frontend_tsc": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "frontend_vitest": {
+      "status": "PASS",
+      "test_files": 8,
+      "passed": 24,
+      "failed": 0
+    },
+    "shadow_gate": {
+      "status": "PASS",
+      "checked_files_count": 90,
+      "blocking_violations_count": 0,
+      "warnings_count": 0,
+      "recommended_max_readiness": "VERIFIED-LOCAL"
+    }
+  },
+  "untested_surfaces": [
+    "Real human spoken audio WER/CER across noisy rooms, accents, and physical microphones (requires owner-consented audio corpus; synthetic text does not substitute for human WER).",
+    "Live multi-step GGUF LLM latency and tool-calling error rate on physical GPU under VRAM pressure.",
+    "Real third-party remote HTTPS MCP server interoperability (current verified pilot covers isolated local JSON-RPC 2.0 stdio subprocess + deterministic fake transport).",
+    "Stage G7 (B26) optional full ecosystem connectors (live WebSearchProviderPort, live camera hardware adapter, live Home Assistant HTTP connector, TLS-hardened Remote Mobile Gateway)."
+  ],
+  "next_gate_awaiting_approval": {
+    "stage": "G7",
+    "work_packages": [
+      "B26: Optional Full Ecosystem Capability Packs (real WebSearchProviderPort with offline/SSRF guards, verified local Camera/HA adapters, TLS-hardened Remote Gateway with Argon2id pairing)"
+    ]
+  }
+}

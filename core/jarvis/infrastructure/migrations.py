@@ -63,13 +63,34 @@ def online_backup_sqlite(source_conn: sqlite3.Connection, dest_path: Path) -> Pa
     return dest_path
 
 
+def _split_sql_statements(sql_text: str) -> list[str]:
+    """Split a migration SQL script into executable statements without sqlite3.executescript() implicit COMMIT."""
+    statements: list[str] = []
+    buf: list[str] = []
+    for line in sql_text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not buf and (not stripped or stripped.startswith("--")):
+            continue
+        buf.append(line)
+        candidate = "".join(buf)
+        if sqlite3.complete_statement(candidate):
+            cleaned = candidate.strip()
+            if cleaned and cleaned != ";":
+                statements.append(cleaned)
+            buf.clear()
+    leftover = "".join(buf).strip()
+    if leftover and not leftover.startswith("--"):
+        statements.append(leftover)
+    return statements
+
+
 def apply_migrations(
     conn: sqlite3.Connection,
     migrations_dir: Path,
     *,
     pre_migration_backup_dir: Path | None = None,
 ) -> list[AppliedMigration]:
-    """Apply numbered *.sql migrations with SHA-256 tamper verification."""
+    """Apply numbered *.sql migrations atomically inside a real SQLite transaction (B19, DEF-06)."""
     _ensure_tracking_table(conn)
     sql_files = sorted(migrations_dir.glob("[0-9][0-9][0-9][0-9]_*.sql"))
     existing = {
@@ -99,8 +120,15 @@ def apply_migrations(
     newly_applied: list[AppliedMigration] = []
     for version, filename, digest, sql_text in pending:
         now_iso = datetime.now(tz=UTC).isoformat()
-        with conn:
-            conn.executescript(sql_text)
+        stmts = _split_sql_statements(sql_text)
+        # B19: execute DDL/DML + schema_migration insert inside one atomic transaction (never implicit-commit executescript!)
+        prev_isolation = conn.isolation_level
+        conn.commit()
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for stmt in stmts:
+                conn.execute(stmt)
             conn.execute(
                 """
                 INSERT INTO schema_migration(version, filename, sha256, applied_at)
@@ -108,6 +136,13 @@ def apply_migrations(
                 """,
                 (version, filename, digest, now_iso),
             )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.isolation_level = prev_isolation
         newly_applied.append(AppliedMigration(version=version, filename=filename, sha256=digest, applied_at=now_iso))
 
     verify_integrity(conn)

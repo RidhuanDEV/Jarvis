@@ -1,0 +1,15 @@
+flowchart TD
+    Req["Incoming HTTP Request to FastAPI"] --> Mid["security_and_wide_event_middleware (app.py:842)"]
+    Mid --> Host["Host Check (BUG: empty Host bypasses; IPv6 [::1] broken; 'testserver' in prod)"]
+    Host --> Orig["Origin Check (rejects any Origin header -> 403)"]
+    Orig --> Size["Content-Length <= 256 KiB (BUG: chunked transfer bypasses)"]
+    Size --> Auth{"Path == /healthz?"}
+    Auth -->|"Yes"| OK0["200 liveness"]
+    Auth -->|"No"| Bearer["Authorization: Bearer <token> (hmac.compare_digest)"]
+    Bearer -->|"Invalid"| E401["401 DENIED"]
+    Bearer -->|"Valid"| Split{"Route Path?"}
+    Split -->|"POST /v1/requests"| Pol["PolicyEngine (trusted Python code) + ApprovalService"]
+    Split -->|"POST /v1/storage/migrate, /cleanup, /screen/analyze, /web/*, /knowledge/query, /workflows/*/execute"| Bypass["DIRECT EXECUTION — BYPASSES PolicyEngine / ApprovalService!"]
+    Pol -->|"R2"| Dialog["Native <dialog> (TRUSTED_UI + LOCAL + single-use nonce + 60s TTL)"]
+    Pol -->|"R3"| HardBan["Deterministic 403 DENIED"]
+    Pol -->|"R0/R1 + Grant"| SafeExec["Execute (NOTE: grant.scope ignored; brokerClient auto-grants 4 caps incl. screen.read)"]

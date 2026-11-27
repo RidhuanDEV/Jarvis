@@ -333,12 +333,26 @@ def test_phase3_fastapi_turns_r2_file_move_voice_and_vault_end_to_end(tmp_path: 
         safe_root = tmp_path / "docs_root"
         safe_root.mkdir()
         (safe_root / "a.txt").write_text("hello", encoding="utf-8")
+
+        # Per Gate G0 Owner Decision A2: fs.file.move execution is disabled by default during Stage G1
+        mv_g1_disabled = container.turn_orchestrator.execute_approved_file_move(
+            approval_id=approval["approval_id"],
+            root_path=str(safe_root),
+            source_relative_path="a.txt",
+            target_relative_path="b.txt",
+            correlation_id="mv-0",
+        )
+        assert mv_g1_disabled.verified is False
+        assert mv_g1_disabled.error_code == ErrorCode.UNSUPPORTED
+
+        # Explicit G4 flag exercises handle-pinned move + anti-overwrite safety invariants
         mv_ok = container.turn_orchestrator.execute_approved_file_move(
             approval_id=approval["approval_id"],
             root_path=str(safe_root),
             source_relative_path="a.txt",
             target_relative_path="b.txt",
             correlation_id="mv-1",
+            g4_file_move_enabled=True,
         )
         assert mv_ok.verified is True
         assert (safe_root / "b.txt").read_text(encoding="utf-8") == "hello"
@@ -351,6 +365,7 @@ def test_phase3_fastapi_turns_r2_file_move_voice_and_vault_end_to_end(tmp_path: 
             source_relative_path="c.txt",
             target_relative_path="b.txt",
             correlation_id="mv-2",
+            g4_file_move_enabled=True,
         )
         assert mv_overwrite.error_code == ErrorCode.DENIED
 

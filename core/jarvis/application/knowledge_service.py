@@ -200,14 +200,29 @@ class KnowledgeRagService:
             )
         root_path = Path(str(row["canonical_path"]))
         root_revision = int(row["revision"])
+        scope_obj = json.loads(str(row["scope_json"]))
+        raw_exts = scope_obj.get("extensions") if isinstance(scope_obj, dict) else None
+        allowed_exts: frozenset[str] | None = None
+        if isinstance(raw_exts, list) and raw_exts:
+            allowed_exts = frozenset(
+                (str(e).strip().lower() if str(e).strip().startswith(".") else f".{str(e).strip().lower()}")
+                for e in raw_exts
+                if str(e).strip()
+            )
         if not root_path.is_dir():
             raise KnowledgeServiceError(ErrorCode.NOT_FOUND, f"Root path missing: '{root_path}'.")
 
         with self._db.knowledge_read() as kconn:
             existing_docs = {
-                str(r["relative_path"]): (str(r["id"]), str(r["sha256"]), int(r["source_revision"]))
+                str(r["relative_path"]): (
+                    str(r["id"]),
+                    str(r["sha256"]),
+                    int(r["source_revision"]),
+                    int(r["byte_size"]),
+                    int(r["mtime_ns"]),
+                )
                 for r in kconn.execute(
-                    "SELECT id, relative_path, sha256, source_revision FROM document WHERE root_id = ?",
+                    "SELECT id, relative_path, sha256, source_revision, byte_size, mtime_ns FROM document WHERE root_id = ?",
                     (root_id,),
                 ).fetchall()
             }
@@ -219,19 +234,36 @@ class KnowledgeRagService:
         seen_rel_paths: set[str] = set()
 
         for candidate in sorted(root_path.rglob("*")):
-            if not candidate.is_file():
+            if not candidate.is_file() or candidate.is_symlink():
                 continue
             rel_posix = candidate.relative_to(root_path).as_posix()
+            # B16: honor scope_json extensions strictly!
+            if allowed_exts is not None and candidate.suffix.lower() not in allowed_exts:
+                unsupported += 1
+                continue
             try:
                 safe_path = Path(self._fs.resolve_within_root(str(root_path), rel_posix))
+                if self._fs.inspect_path(str(safe_path)).is_reparse_point:
+                    failed += 1
+                    continue
             except PermissionError:
                 failed += 1
                 continue
 
             seen_rel_paths.add(rel_posix)
+            # B16: mtime_ns + byte_size fast-skip before SHA-256 hashing & full document parsing!
+            prev = existing_docs.get(rel_posix)
+            try:
+                st = safe_path.stat()
+            except OSError:
+                failed += 1
+                continue
+            if prev is not None and prev[3] == int(st.st_size) and prev[4] == int(st.st_mtime_ns) and prev[1] != "":
+                skipped += 1
+                continue
+
             parsed = parse_document_safe(safe_path)
 
-            prev = existing_docs.get(rel_posix)
             if prev is not None and prev[1] == parsed.sha256 and parsed.sha256 != "":
                 skipped += 1
                 continue

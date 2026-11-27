@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -157,6 +159,8 @@ class LlamaCppServerAdapter:
             "messages": [{"role": m.role, "content": m.content} for m in request.messages],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
+            "top_p": 0.8,
+            "top_k": 20,
             "stream": False,
         }
         if request.enforce_non_thinking:
@@ -193,3 +197,78 @@ class LlamaCppServerAdapter:
             completion_tokens=int(usage.get("completion_tokens", 0)),
             thinking_stripped=(cleaned != raw_text),
         )
+
+    async def stream_complete(self, request: LlmCompletionRequest) -> AsyncIterator[str]:
+        """Stream OpenAI-compatible SSE tokens from llama-server while suppressing <think> blocks."""
+        payload = self.build_completion_payload(request)
+        payload["stream"] = True
+        in_think = False
+        pending = ""
+
+        async with (
+            httpx.AsyncClient(
+                transport=self._transport, timeout=request.timeout_seconds, trust_env=False
+            ) as client,
+            client.stream(
+                "POST",
+                f"{self._endpoint_url}/v1/chat/completions",
+                headers=self._headers(),
+                json=payload,
+            ) as resp,
+        ):
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                choices = event.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                delta = choices[0].get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                token = delta.get("content")
+                if not isinstance(token, str) or not token:
+                    continue
+
+                if not request.enforce_non_thinking:
+                    yield token
+                    continue
+
+                # Strip <think>...</think> inline across chunk boundaries
+                pending += token
+                while pending:
+                    if in_think:
+                        end_idx = pending.find("</think>")
+                        if end_idx == -1:
+                            if len(pending) > 16:
+                                pending = pending[-16:]
+                            break
+                        pending = pending[end_idx + len("</think>") :]
+                        in_think = False
+                    else:
+                        start_idx = pending.find("<think>")
+                        if start_idx != -1:
+                            if start_idx > 0:
+                                yield pending[:start_idx]
+                            pending = pending[start_idx + len("<think>") :]
+                            in_think = True
+                        else:
+                            # Hold trailing '<' fragment in case '<think>' splits across chunks
+                            lt_idx = pending.rfind("<")
+                            if lt_idx != -1 and "<think>".startswith(pending[lt_idx:]):
+                                if lt_idx > 0:
+                                    yield pending[:lt_idx]
+                                pending = pending[lt_idx:]
+                                break
+                            yield pending
+                            pending = ""
+
+        if pending and not in_think:
+            yield pending

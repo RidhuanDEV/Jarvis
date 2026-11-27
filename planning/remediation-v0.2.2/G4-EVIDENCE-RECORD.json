@@ -1,0 +1,160 @@
+{
+  "gate_id": "G4",
+  "stage_name": "Context, Persistent Memory, Multi-Step Coordinator, Background Scheduler, Real Workflows, Hardened RAG & Protected Screen Awareness (B13-B17)",
+  "generated_at_utc": "2026-11-27T09:02:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "git_diff_bytes": 453263,
+  "git_diff_sha256": "d1ba335e6c5862991e31f7029336ad1e0e9616f624debc4f10317a3847c937df",
+  "readiness_level": "VERIFIED-LOCAL",
+  "owner_decisions_preserved": {
+    "A1_gate_by_gate_pause": true,
+    "A2_file_move_g4_tier2_gui_diff_same_scope_no_overwrite": true,
+    "A3_owner_ui_privacy_delete_only_never_llm_voice_mcp": true,
+    "A4_direct_local_working_tree_zero_git_mutations": true
+  },
+  "completed_work_packages": [
+    {
+      "id": "B13",
+      "title": "Persistent Session/Message Store, Bounded ContextAssembler, Non-Parametric Alias Learning & BR-15 Taint Propagation",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/application/context_service.py",
+        "core/jarvis/application/memory_service.py",
+        "core/jarvis/application/turn_orchestrator.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "highlights": [
+        "Reuses core.db session/message tables when conversation_history_retention_enabled=True (volatile RAM otherwise) and reloads persisted context across container restarts.",
+        "retrieve_relevant_memories and upsert_user_alias query is_encrypted=0 directly, avoiding unnecessary decryption of unrelated sensitive encrypted rows.",
+        "Exposes GET /v1/memories/inspector with memory influence provenance, user aliases, and session_untrusted_taint state.",
+        "Propagates BR-15 untrusted taint across turns so LLM-proposed mutating actions after RAG/screen exposure inherit untrusted_origin=True and are denied (403 DENIED)."
+      ]
+    },
+    {
+      "id": "B14",
+      "title": "Strict Per-Tool Pydantic Schemas, Bounded LLM Repair Loop, Compound Multi-Step Coordinator & Tier-2 GUI Diff File Edit/Move",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/domain/tool_schemas.py",
+        "core/jarvis/domain/router.py",
+        "core/jarvis/application/file_mutation_service.py",
+        "core/jarvis/application/turn_orchestrator.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "highlights": [
+        "Strict extra='forbid' Pydantic v2 schemas for all registered tools eliminate KeyError 500s on malformed LLM arguments.",
+        "Up to 2 bounded LLM schema repair attempts before deterministic 422 INVALID_ARGS.",
+        "Anchored _VOLUME_SET_RE and added _COMPOUND_MULTI_ACTION_RE so multi-action utterances escalate to Multi-Step Coordinator with honest PARTIAL outcome on independent NOT_FOUND.",
+        "Delivered POST /v1/files/edit/propose|apply and re-enabled POST /v1/files/move/propose|apply (Decision A2) with unified diff preview, anti-empty-truncate guard, single-use GUI approval_id consume, TOCTOU TARGET_CHANGED verification, no-overwrite guard, atomic fsync+replace write, and SHA-256 readback."
+      ]
+    },
+    {
+      "id": "B15",
+      "title": "Real Persistent Background Reminder Scheduler, Non-Shell Win32 Toast Notifications & Real Declarative Workflow Executor",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/application/scheduler_runner.py",
+        "core/jarvis/platform/windows/notifications.py",
+        "core/jarvis/application/workflow_service.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src/components/ProductivityPanels.tsx"
+      ],
+      "highlights": [
+        "BackgroundSchedulerRunner runs periodic non-blocking SQLite reminder reconciliation inside FastAPI lifespan (GET /v1/scheduler/status) with idempotent dedup_key delivery across restarts.",
+        "WindowsToastNotificationAdapter uses Win32 Shell_NotifyIconW (NIF_INFO) with zero PowerShell/shell invocation and truthful OS acceptance return.",
+        "WorkflowEngineService.execute_workflow_async wired to TurnOrchestratorService.execute_verified_step_for_workflow for real policy-checked tool execution while unwired WorkflowEngineService still blocks fake completion with ErrorCode.UNSUPPORTED."
+      ]
+    },
+    {
+      "id": "B16",
+      "title": "Hardened Layer-2/3 Hybrid RAG Ingestion & Delimiter Breakout Escaping",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/domain/knowledge.py",
+        "core/jarvis/application/knowledge_service.py"
+      ],
+      "highlights": [
+        "wrap_untrusted_rag_context escapes closing/opening <untrusted_document_data> tags to [ESCAPED_TAG].",
+        "sync_source_root strictly enforces scope_json extensions, skips symlinks/reparse points, and fast-skips unchanged files using mtime_ns + byte_size before hashing/parsing."
+      ]
+    },
+    {
+      "id": "B17",
+      "title": "Honest Protected Screen Awareness with Title+Text Secret Redaction & Win32 UAC/Password Guards",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/application/screen_service.py",
+        "core/jarvis/platform/windows/screen_capture.py"
+      ],
+      "highlights": [
+        "Redacts secrets from BOTH window_title and extracted_text before model/UI/audit output and exposes honest capability_kind ('window_metadata'|'uia_text'|'ocr').",
+        "Real Win32 OpenProcessToken + GetTokenInformation(TokenElevation=20) fail-closed elevation check and GetGUIThreadInfo/ES_PASSWORD password-field check verified via live read-only Windows host probe."
+      ]
+    }
+  ],
+  "verification_results": {
+    "pytest": {
+      "status": "PASS",
+      "passed": 173,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 26.4
+    },
+    "router_compound_probes": {
+      "status": "PASS",
+      "recall_ok": true,
+      "precision_ok": true
+    },
+    "ruff": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "mypy": {
+      "status": "PASS",
+      "files_checked": 73,
+      "errors": 0
+    },
+    "cargo_test": {
+      "status": "PASS",
+      "passed": 8,
+      "failed": 0
+    },
+    "frontend_tsc": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "frontend_vitest": {
+      "status": "PASS",
+      "test_files": 6,
+      "passed": 20,
+      "failed": 0
+    },
+    "live_windows_screen_probe": {
+      "status": "PASS",
+      "result": "SCREEN_PROBE_OK proc=unknown elevated=False pw=False len=58"
+    },
+    "shadow_gate": {
+      "status": "PASS",
+      "checked_files_count": 66,
+      "blocking_violations_count": 0,
+      "warnings_count": 0,
+      "recommended_max_readiness": "VERIFIED-LOCAL"
+    }
+  },
+  "untested_surfaces": [
+    "Real end-to-end live local LLM model (llama-server + GGUF) multi-step JSON tool-calling & repair latency on physical GPU/CPU hardware (tested with deterministic scripted LLM adapter).",
+    "Live OS visual confirmation of Win32 Shell_NotifyIconW toast popup in Windows Action Center on an interactive desktop session.",
+    "Full UIA accessibility tree extraction or local OCR on multi-window desktop setups (current adapter honestly reports capability_kind='window_metadata').",
+    "Installed standalone desktop bundle (.msi/.exe) end-to-end verification (scheduled for Stage G5 B18-B21 + B24)."
+  ],
+  "next_gate_awaiting_approval": {
+    "stage": "G5",
+    "work_packages": [
+      "B18: Standalone Packaging, Signed/Verified Windows Installer & Clean-Machine Smoke Check",
+      "B19: Cross-Machine Encrypted Backup DEK Portability & Online-Backup Quiesced Storage Migration",
+      "B20: Hardware-Aware AI Profile Governor & Private LAN TLS/Host Safety Fix",
+      "B21: Visual HUD Polish, Interactive Diff Preview Modal & Accessibility Hardening",
+      "B24: License/SBOM Audit & Release Sign-Off Package"
+    ]
+  }
+}

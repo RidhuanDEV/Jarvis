@@ -66,17 +66,29 @@ def _extract_bearer(request: Request) -> str:
     return raw[len("Bearer ") :].strip()
 
 
+def _extract_replay_headers(request: Request) -> tuple[str | None, float | None]:
+    nonce = request.headers.get("x-jarvis-nonce")
+    ts_raw = request.headers.get("x-jarvis-timestamp")
+    if ts_raw is None:
+        return (nonce, None)
+    try:
+        return (nonce, float(ts_raw.strip()))
+    except ValueError:
+        return (nonce, -1.0)
+
+
 def create_remote_gateway_app(
     *,
     remote_service: RemoteGatewayService,
     reminder_service: ReminderSchedulerService,
     turn_orchestrator: TurnOrchestratorService,
     clock: ClockPort,
+    require_replay_headers: bool = False,
 ) -> FastAPI:
     """Build the isolated private-LAN/VPN mobile gateway ASGI application."""
     app = FastAPI(
         title="J.A.R.V.I.S. Private Scoped Remote Gateway",
-        version="0.2.1",
+        version="0.2.2",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -85,15 +97,27 @@ def create_remote_gateway_app(
     def _corr(request: Request) -> str:
         return request.headers.get("X-Correlation-Id") or f"rem_{uuid.uuid4().hex[:16]}"
 
+    def _authorize(request: Request, *, scope_requested: str, is_mutating: bool, corr: str) -> Any:
+        nonce, ts = _extract_replay_headers(request)
+        return remote_service.authorize_remote_request(
+            bearer_token=_extract_bearer(request),
+            scope_requested=scope_requested,
+            is_mutating=is_mutating,
+            replay_nonce=nonce,
+            replay_timestamp_epoch=ts,
+            require_replay_headers=require_replay_headers and is_mutating,
+            correlation_id=corr,
+        )
+
     @app.get("/remote/v1/status")
     async def remote_status(request: Request) -> Response:
         corr = _corr(request)
         try:
-            ctx = remote_service.authorize_remote_request(
-                bearer_token=_extract_bearer(request),
+            ctx = _authorize(
+                request,
                 scope_requested="remote.status.read",
                 is_mutating=False,
-                correlation_id=corr,
+                corr=corr,
             )
         except RemoteGatewayError as exc:
             return _remote_error(
@@ -119,11 +143,11 @@ def create_remote_gateway_app(
     async def remote_chat(body: RemoteChatBody, request: Request) -> Response:
         corr = _corr(request)
         try:
-            ctx = remote_service.authorize_remote_request(
-                bearer_token=_extract_bearer(request),
+            ctx = _authorize(
+                request,
                 scope_requested="remote.chat.send",
                 is_mutating=True,
-                correlation_id=corr,
+                corr=corr,
             )
         except RemoteGatewayError as exc:
             return _remote_error(
@@ -164,11 +188,11 @@ def create_remote_gateway_app(
     async def remote_list_reminders(request: Request) -> Response:
         corr = _corr(request)
         try:
-            remote_service.authorize_remote_request(
-                bearer_token=_extract_bearer(request),
+            _authorize(
+                request,
                 scope_requested="remote.reminder.read",
                 is_mutating=False,
-                correlation_id=corr,
+                corr=corr,
             )
         except RemoteGatewayError as exc:
             return _remote_error(
@@ -187,11 +211,11 @@ def create_remote_gateway_app(
     async def remote_create_reminder(body: RemoteReminderBody, request: Request) -> Response:
         corr = _corr(request)
         try:
-            remote_service.authorize_remote_request(
-                bearer_token=_extract_bearer(request),
+            _authorize(
+                request,
                 scope_requested="remote.reminder.create",
                 is_mutating=True,
-                correlation_id=corr,
+                corr=corr,
             )
             created = reminder_service.create_reminder(
                 title=body.title,
@@ -224,11 +248,11 @@ def create_remote_gateway_app(
         """Fail-closed endpoint enforcing FR-REM-02: blocks fs/camera/screen/policy/R2 with 403."""
         corr = _corr(request)
         try:
-            remote_service.authorize_remote_request(
-                bearer_token=_extract_bearer(request),
+            _authorize(
+                request,
                 scope_requested=capability,
                 is_mutating=True,
-                correlation_id=corr,
+                corr=corr,
             )
         except RemoteGatewayError as exc:
             return _remote_error(

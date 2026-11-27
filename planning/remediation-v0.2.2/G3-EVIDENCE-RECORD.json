@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "stage": "G3",
+  "stage_name": "Unified Asynchronous Voice Pipeline & Bilingual TTS (B11-B12)",
+  "recorded_at_utc": "2026-11-27T08:15:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "post_g3_dirty_diff_bytes": 406585,
+  "post_g3_dirty_diff_sha256": "2216def35bee02331ca181e3855a8ded7fab06be7910b757f56746d992a3b736",
+  "owner_gate_g0_decisions_preserved": {
+    "A1_stage_scope": "Executed Stage G3 (B11-B12) and paused at Gate G3 for owner verification",
+    "A2_file_move_policy": "fs.file.move remains disabled (ErrorCode.UNSUPPORTED) until Stage G4 Tier-2 GUI diff approval",
+    "A3_owner_privacy_ui_exception": "Preserved; zero voice/LLM/MCP file deletion capability",
+    "A4_git_isolation": "Direct local working-tree patches; zero branch/commit/push mutations"
+  },
+  "measured_verification_summary": {
+    "pytest": {"passed": 168, "failed": 0, "duration_seconds": 22.69, "level": "VERIFIED_INTEGRATION"},
+    "vitest": {"passed": 20, "failed": 0, "files": 6, "level": "VERIFIED_UNIT"},
+    "tsc": {"exit_code": 0, "errors": 0},
+    "cargo_test": {"passed": 8, "failed": 0, "duration_seconds": 0.02, "level": "VERIFIED_UNIT"},
+    "ruff": {"exit_code": 0, "errors": 0},
+    "mypy": {"exit_code": 0, "checked_files": 68, "errors": 0},
+    "live_windows_audio_readonly_probe": {
+      "audio_endpoints_discovered": 2,
+      "onecore_voices_probed": 4,
+      "onecore_license_spdx": ["Proprietary-Windows-OS"],
+      "level": "VERIFIED_INTEGRATION"
+    },
+    "shadow_gate": {"passed": true, "blocking_violations": 0, "warnings": 0, "max_readiness": "VERIFIED-LOCAL"}
+  },
+  "work_items": [
+    {
+      "evidence_id": "EV-G3-B11",
+      "backlog_id": "B11",
+      "mapped_ids": ["IR-10", "DEF-12", "DEF-17", "DEF-37", "FR-VOI-01", "FR-VOI-02", "FR-VOI-03", "FR-VOI-06", "FR-COR-01", "DEC-013", "DEC-028"],
+      "changed_files": [
+        "core/jarvis/domain/voice.py",
+        "core/jarvis/application/voice_service.py",
+        "core/jarvis/infrastructure/live_voice_engine.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src-tauri/src/commands.rs",
+        "apps/desktop/src-tauri/src/lib.rs",
+        "apps/desktop/src/lib/contracts.ts",
+        "apps/desktop/src/lib/brokerClient.ts",
+        "apps/desktop/src/components/FoundationPanels.tsx",
+        "apps/desktop/src/App.tsx"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/integration/test_g3_voice_pipeline.py::test_b11_u_v01_voiced_only_segmenter_blocks_clicks_and_passes_real_speech",
+        "tests/integration/test_g3_voice_pipeline.py::test_b11_stt_confidence_gate_precision_recall_and_scoped_hotwords",
+        "tests/integration/test_g3_voice_pipeline.py::test_b11_u_v02_unified_voice_service_device_switch_barge_in_lock_and_replay",
+        "apps/desktop/src/__tests__/g3_voice_lab.test.tsx"
+      ],
+      "result": "PASS",
+      "residual_risk": "Human microphone WER, ambient noise WER, and real-room openWakeWord FAR/FRR require interactive consented human audio sessions (no synthetic-only WER certification permitted per Section 8.4).",
+      "rollback": "Revert modified hunks in domain/voice.py, voice_service.py, live_voice_engine.py, app.py, commands.rs, lib.rs, contracts.ts, brokerClient.ts, FoundationPanels.tsx, and App.tsx."
+    },
+    {
+      "evidence_id": "EV-G3-B12",
+      "backlog_id": "B12",
+      "mapped_ids": ["IR-10", "DEF-17", "DEF-31", "FR-VOI-04", "FR-VOI-05", "DEC-028"],
+      "changed_files": [
+        "core/jarvis/domain/voice.py",
+        "core/jarvis/platform/windows/audio.py",
+        "core/jarvis/application/voice_service.py",
+        "core/jarvis/infrastructure/live_voice_engine.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/integration/test_g3_voice_pipeline.py::test_b12_bilingual_tts_normalizer_and_honest_onecore_provider",
+        "tests/unit/test_voice_wake_and_llm_conversation.py"
+      ],
+      "result": "PASS",
+      "residual_risk": "Live bilingual Piper audio playback requires installed trusted Piper voice weights (.onnx + .onnx.json listed in trusted_artifacts.json); human listening MOS remains unmeasured until live interactive audio test.",
+      "rollback": "Revert domain/voice.py, platform/windows/audio.py, voice_service.py, and live_voice_engine.py."
+    }
+  ],
+  "untested_surfaces": [
+    "Human microphone clean/ambient WER, code-switch entity accuracy, and real-room openWakeWord FAR/FRR (no synthetic WER substitution per Review §8.4)",
+    "Live hardware speaker/headset audio playback & real-time microphone capture loop with physical faster-whisper/Piper weights loaded",
+    "VERIFIED_INSTALLED_E2E: Full installed desktop .exe Voice Lab device switching, live RMS metering, and headset voice barge-in",
+    "Human listening MOS / naturalness evaluation for bilingual Indonesian+English Piper TTS"
+  ]
+}

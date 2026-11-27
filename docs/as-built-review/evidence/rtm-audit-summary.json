@@ -1,0 +1,514 @@
+{
+  "schema_version": "1.0",
+  "audit_target": "J.A.R.V.I.S. v0.2.1",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "source_document": "docs/as-built-review/19-SDLC-COMPLIANCE-MATRIX.md",
+  "totals": {
+    "total_requirements": 98,
+    "functional_requirements_fr": 82,
+    "non_functional_requirements_nfr": 16,
+    "by_audit_status": {
+      "BROKEN": 11,
+      "IMPLEMENTED": 7,
+      "MOCK": 4,
+      "NOT IMPLEMENTED": 8,
+      "PARTIAL": 51,
+      "UNVERIFIED": 6,
+      "VERIFIED": 11
+    }
+  },
+  "decision_register_scope": "DEC-001..DEC-030",
+  "business_rules_scope": "BR-01..BR-22",
+  "requirements": [
+    {
+      "requirement_id": "FR-VOI-01",
+      "summary": "Text/PTT/local wake while unlocked",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-VOI-02",
+      "summary": "Accurate voice indicators & instant mic close on mute",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-VOI-03",
+      "summary": "Configurable-language STT + ambiguity clarification",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-VOI-04",
+      "summary": "Local TTS speed/vol/stop/barge-in",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-VOI-05",
+      "summary": "Full text fallback on mic/STT/TTS failure",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-VOI-06",
+      "summary": "Audio hotplug, endpoint echo guard, OS voice probe",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-COR-01",
+      "summary": "Zero-LLM deterministic routing",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-COR-02",
+      "summary": "Untrusted LLM proposal under strict schema + Policy",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-COR-03",
+      "summary": "`<=5` steps, `<=2` schema repairs, 60s timeout",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-COR-04",
+      "summary": "Mandatory ambiguity clarification",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-COR-05",
+      "summary": "Per-request cancel & truthful status",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-COR-06",
+      "summary": "Offline Direct Mode without LLM",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-COR-07",
+      "summary": "Dynamic language, IANA TZ, persona/verbosity",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-OS-01",
+      "summary": "Allowlisted app launch without shell",
+      "audit_status": "MOCK"
+    },
+    {
+      "requirement_id": "FR-OS-02",
+      "summary": "Volume 0\u2013100 with readback `+-2`",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-OS-03",
+      "summary": "Canonical `source_root` file search/open blocking traversal/UNC",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-OS-04",
+      "summary": "File rename/move via R2 preview, no-overwrite, no perm delete",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-OS-05",
+      "summary": "Adapter-verified outcomes (never model claims)",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-OS-06",
+      "summary": "Win32 + `AUMID`/MSIX launch & handle-pinned file checks",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-MEM-01",
+      "summary": "Explicit-consent memory save/proposal approval",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-MEM-02",
+      "summary": "List/search/edit/delete/export memory",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-MEM-03",
+      "summary": "Provenance, sensitivity, optimistic revision, audit",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-MEM-04",
+      "summary": "Separate session history with configurable TTL",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-MEM-05",
+      "summary": "Index eviction + `deletion_ledger` anti-resurrection",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-SCH-01",
+      "summary": "CRUD reminders UTC + IANA",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-SCH-02",
+      "summary": "Persistent leased/idempotent crash-recovering jobs",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SCH-03",
+      "summary": "Quiet hours, snooze, dismiss, missed reporting",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-SCH-04",
+      "summary": "Opt-in proactive rules with debounce & rate limits",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-SCH-05",
+      "summary": "OS Suspend/Resume teardown & clock-jump reconciliation",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-KNO-01",
+      "summary": "Opt-in TXT/MD/PDF/DOCX indexing + `ocr_required`",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-KNO-02",
+      "summary": "SHA-256 incremental sync & stale cleanup",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-KNO-03",
+      "summary": "FTS5 lexical + optional semantic search",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-KNO-04",
+      "summary": "Verified citations or abstention",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-KNO-05",
+      "summary": "No-macro/no-network parser + `tools=[]` in RAG",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-WEB-01",
+      "summary": "Pluggable read-only web search + private screening",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-WEB-02",
+      "summary": "Public HTTP(S) anti-SSRF fetch + size/timeout caps",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-WEB-03",
+      "summary": "Source URL, fetch time, publish date & stale cache label",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-SCR-01",
+      "summary": "Explicit window-scoped capture + indicator & stop",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SCR-02",
+      "summary": "UIA/local OCR priority + password/denied block",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SCR-03",
+      "summary": "RAM-only raw frame wiped on finish (0 disk writes)",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-SCR-04",
+      "summary": "Pre-context secret redaction",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-LIF-01",
+      "summary": "Validated local CRUD tasks, calendar, expenses, habits",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-LIF-02",
+      "summary": "Integer minor-unit expenses isolated per ISO currency",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-LIF-03",
+      "summary": "Descriptive-only insights (no payment/medical)",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-LIF-04",
+      "summary": "Optional read-only OAuth PKCE calendar/email connector",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-AUT-01",
+      "summary": "Declarative typed workflows (`<=5` steps, no loops)",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AUT-02",
+      "summary": "`dry-run` preview + fresh R2 approval on changes",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-AUT-03",
+      "summary": "Per-step audit, cancel, idempotency, crash reconciliation",
+      "audit_status": "MOCK"
+    },
+    {
+      "requirement_id": "FR-IOT-01",
+      "summary": "On-demand camera snapshot + indicator + lock stop",
+      "audit_status": "MOCK"
+    },
+    {
+      "requirement_id": "FR-IOT-02",
+      "summary": "Allowlisted Home Assistant entity read/control",
+      "audit_status": "MOCK"
+    },
+    {
+      "requirement_id": "FR-IOT-03",
+      "summary": "Hard R3 ban on safety-critical IoT actuation",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "FR-IOT-04",
+      "summary": "Honest `unavailable`/`unknown` on HA disconnect",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-REM-01",
+      "summary": "Disabled-by-default separate TLS remote gateway + pairing",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-REM-02",
+      "summary": "Narrow remote scope ceiling blocking R2/files/camera",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-REM-03",
+      "summary": "Local correction-based preference proposals",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-REM-04",
+      "summary": "Honest `host unreachable` without silent mutation queue",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-ADM-01",
+      "summary": "Deny-by-default granular grants",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-ADM-02",
+      "summary": "Single-use R2 native UI approval (`60s` TTL, nonce, target snapshot)",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-ADM-03",
+      "summary": "OS Lock stops mic/camera, cancels approvals, blocks mutations",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-ADM-04",
+      "summary": "Redacted structured audit with `correlation_id`",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-ADM-05",
+      "summary": "Local-confirmed export, encrypted backup, restore & factory reset",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-ADM-06",
+      "summary": "Accurate health diagnostics + SHA-256 manifest check",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-ADM-07",
+      "summary": "Minimal offline Direct Mode base installer + 10-step onboarding",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-ADM-08",
+      "summary": "Dual SQLite, cross-DB isolation, Argon2id+AES-GCM restore",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AIP-01",
+      "summary": "Standardized LLM provider contract across >=2 adapters",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AIP-02",
+      "summary": "Verified provider/manifest registry blocking non-schema models",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AIP-03",
+      "summary": "6 AI profiles + honest unsupported flags",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AIP-04",
+      "summary": "Atomic switch after drain/cancel + rollback",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-AIP-05",
+      "summary": "Opt-in cancelable non-private benchmark",
+      "audit_status": "NOT IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-AIP-06",
+      "summary": "Explicit TLS-verified private LAN enrollment",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-AIP-07",
+      "summary": "Atomic embedding index generation promotion",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-AIP-08",
+      "summary": "4 runtime ownership modes + `external_local` non-termination",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-UX-01",
+      "summary": "Command Center, Compact HUD & Tray driven by monotonic `(request_id, seq)`",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-UX-02",
+      "summary": "Ephemeral real-amplitude voice visualizer (0 raw PCM in logs)",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-UX-03",
+      "summary": "4 visual tiers, hidden pause, hysteresis auto-downgrade",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-UX-04",
+      "summary": "Configurable FPS, battery/gaming conservation, shortcut conflict detection",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SYS-01",
+      "summary": "Capability Discovery + 4 honest support labels",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SYS-02",
+      "summary": "Recommendation Engine + versioned config + rollback + secret-free export",
+      "audit_status": "IMPLEMENTED"
+    },
+    {
+      "requirement_id": "FR-SYS-03",
+      "summary": "11-root Dynamic Storage Manager + quotas + SMB block",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SYS-04",
+      "summary": "Transactional cross-drive migration + rollback",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "FR-SYS-05",
+      "summary": "11-category License Inventory + SBOM/`NOTICE`",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "FR-SYS-06",
+      "summary": "Versioned Extension SDK + verified updates w/ rollback",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-01",
+      "summary": "Latency `p95<=4s` direct / `<=12s` warm LLM (100+100)",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-02",
+      "summary": "Idle `<=1GB` RAM / `<=3%` CPU; active respects caps",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-03",
+      "summary": "Full offline operation of R1 core",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "NFR-04",
+      "summary": "`0` unauthorized actions, `0` raw secrets in logs, `0` non-loopback listeners",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-05",
+      "summary": "Backup RPO `<=24h`, RTO `<=30m` + tombstone replay",
+      "audit_status": "BROKEN"
+    },
+    {
+      "requirement_id": "NFR-06",
+      "summary": "Full keyboard nav, ARIA, WCAG 2.2 AA across major screens",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-07",
+      "summary": "Holdout quality (`>=95%` direct, `>=85%` mixed, `<=20%` ID WER, `<=0.2/hr` FAR)",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-08",
+      "summary": "RAG eval (`>=100` answerable + `>=50` unanswerable, `>=90%`)",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-09",
+      "summary": "Versioned contracts, checksummed migrations, locked deps, SBOM",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-10",
+      "summary": "Privacy by default (0 disk audio/frames, 0 telemetry, encrypted sensitive memory)",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-11",
+      "summary": "Encrypted, rate-limited, expiring, revocable remote sessions",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-12",
+      "summary": "8h continuous soak (`0` crashes, `<=20%` mem growth)",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-13",
+      "summary": "WebView2 `Balanced @ 60 FPS` `p95 <= 20 ms`",
+      "audit_status": "UNVERIFIED"
+    },
+    {
+      "requirement_id": "NFR-14",
+      "summary": "Switching runtime/model/profile never expands auth or crosses zones",
+      "audit_status": "PARTIAL"
+    },
+    {
+      "requirement_id": "NFR-15",
+      "summary": "Job Object kills `managed_local` `<=5s`, spares `external_local`",
+      "audit_status": "VERIFIED"
+    },
+    {
+      "requirement_id": "NFR-16",
+      "summary": "`0` OS imports in `domain`/`application` & `0` dev hardcodes",
+      "audit_status": "VERIFIED"
+    }
+  ]
+}

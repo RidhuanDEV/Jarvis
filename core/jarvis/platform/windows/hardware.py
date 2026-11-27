@@ -123,6 +123,50 @@ def _classify_gpu_vendor(device_string: str) -> Literal["nvidia", "amd", "intel"
     return "unknown"
 
 
+def _lookup_registry_gpu_vram_mib() -> dict[str, int]:
+    """Read 64-bit HardwareInformation.qwMemorySize for AMD/Intel GPUs from Windows Display Class registry (B20)."""
+    if sys.platform != "win32":
+        return {}
+    vram_by_name: dict[str, int] = {}
+    try:
+        import winreg
+
+        class_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, class_path) as root_key:
+            idx = 0
+            while True:
+                try:
+                    sub_name = winreg.EnumKey(root_key, idx)
+                    idx += 1
+                except OSError:
+                    break
+                if not sub_name.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(root_key, sub_name) as sub_key:
+                        desc, _ = winreg.QueryValueEx(sub_key, "DriverDesc")
+                        desc_str = str(desc).strip().lower()
+                        mem_bytes = 0
+                        for val_name in ("HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"):
+                            try:
+                                raw_val, _ = winreg.QueryValueEx(sub_key, val_name)
+                                if isinstance(raw_val, int) and raw_val > 0:
+                                    mem_bytes = raw_val
+                                    break
+                                if isinstance(raw_val, bytes) and len(raw_val) in (4, 8):
+                                    mem_bytes = int.from_bytes(raw_val, "little", signed=False)
+                                    break
+                            except OSError:
+                                continue
+                        if desc_str and mem_bytes > 0:
+                            vram_by_name[desc_str] = max(vram_by_name.get(desc_str, 0), mem_bytes // (1024 * 1024))
+                except OSError:
+                    continue
+    except Exception:
+        return {}
+    return vram_by_name
+
+
 def _probe_windows_displays_and_adapters() -> tuple[tuple[DisplayInfo, ...], list[GpuInfo]]:
     if sys.platform != "win32":
         return ((), [])
@@ -130,6 +174,7 @@ def _probe_windows_displays_and_adapters() -> tuple[tuple[DisplayInfo, ...], lis
     displays: list[DisplayInfo] = []
     adapter_gpus: list[GpuInfo] = []
     seen_adapters: set[str] = set()
+    reg_vram = _lookup_registry_gpu_vram_mib()
 
     dev = _DISPLAY_DEVICEW()
     dev.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
@@ -159,13 +204,14 @@ def _probe_windows_displays_and_adapters() -> tuple[tuple[DisplayInfo, ...], lis
                 seen_adapters.add(adapter_name)
                 vendor = _classify_gpu_vendor(adapter_name)
                 if vendor != "nvidia":
+                    detected_vram = reg_vram.get(adapter_name.lower(), 0)
                     adapter_gpus.append(
                         GpuInfo(
                             index=len(adapter_gpus),
                             vendor=vendor,
                             name=adapter_name,
-                            vram_total_mib=0,
-                            vram_free_mib=0,
+                            vram_total_mib=detected_vram,
+                            vram_free_mib=detected_vram,
                             driver_version="",
                             is_integrated=(vendor == "intel" and "arc" not in adapter_name.lower()),
                             supports_cuda=False,

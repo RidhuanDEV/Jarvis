@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -19,6 +20,16 @@ from pathlib import Path
 from jarvis.infrastructure.migrations import apply_migrations, online_backup_sqlite, verify_integrity
 
 MIGRATIONS_BASE = Path(__file__).resolve().parents[2] / "migrations"
+
+
+def resolve_migrations_base() -> Path:
+    """Resolve bundled migrations directory cleanly for both standalone installers (B18) and repo runs."""
+    override = os.environ.get("JARVIS_MIGRATIONS_DIR", "").strip()
+    if override:
+        cand = Path(override)
+        if cand.is_dir():
+            return cand
+    return MIGRATIONS_BASE
 
 
 @dataclass(frozen=True)
@@ -84,15 +95,21 @@ class DualSqliteManager:
 
     def initialize(self) -> None:
         """Apply checksummed migrations on both DBs and run startup orphan GC (DEC-007)."""
+        mig_base = resolve_migrations_base()
         with self._core_lock:
             apply_migrations(
                 self._core_conn,
-                MIGRATIONS_BASE / "core",
+                mig_base / "core",
                 pre_migration_backup_dir=self.pre_migration_backup_dir,
             )
         with self._knowledge_lock:
-            apply_migrations(self._knowledge_conn, MIGRATIONS_BASE / "knowledge")
+            apply_migrations(self._knowledge_conn, mig_base / "knowledge")
         self.gc_revoked_knowledge()
+
+    def snapshot_knowledge(self, dest_path: Path) -> Path:
+        """Create a WAL-consistent Online Backup snapshot of jarvis_knowledge.db (B19)."""
+        with self._knowledge_lock:
+            return online_backup_sqlite(self._knowledge_conn, dest_path)
 
     @contextmanager
     def core_tx(self) -> Iterator[sqlite3.Connection]:
@@ -116,7 +133,16 @@ class DualSqliteManager:
         with self._knowledge_lock:
             yield self._knowledge_conn
 
+    def check_health_fast(self) -> dict[str, bool]:
+        """Lightweight liveness/readiness check (SELECT 1) safe for high-frequency health polling (IR-17, B07)."""
+        with self._core_lock:
+            core_ok = self._core_conn.execute("SELECT 1").fetchone() is not None
+        with self._knowledge_lock:
+            know_ok = self._knowledge_conn.execute("SELECT 1").fetchone() is not None
+        return {"core_db_ok": core_ok, "knowledge_db_ok": know_ok, "sqlite_vec_loaded": self._vec_loaded}
+
     def check_health(self) -> dict[str, bool]:
+        """Deep SQLite PRAGMA integrity_check across both databases (use off event loop or explicit diagnostics)."""
         with self._core_lock:
             verify_integrity(self._core_conn)
         with self._knowledge_lock:
@@ -198,13 +224,22 @@ class DualSqliteManager:
         return hits
 
     def gc_revoked_knowledge(self) -> int:
-        """Idempotently purge documents/chunks for revoked or tombstoned source roots."""
+        """Idempotently purge documents/chunks/file_metadata for revoked or tombstoned source roots."""
         active_roots, _deleted_roots, deleted_docs, deleted_chunks = self._get_authorized_roots_and_tombstones()
         removed = 0
         with self._knowledge_lock, self._knowledge_conn:
+            has_file_meta = (
+                self._knowledge_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_metadata'"
+                ).fetchone()
+                is not None
+            )
             if not active_roots:
                 cur = self._knowledge_conn.execute("DELETE FROM document")
                 removed += cur.rowcount
+                if has_file_meta:
+                    cur = self._knowledge_conn.execute("DELETE FROM file_metadata")
+                    removed += cur.rowcount
             else:
                 placeholders = ",".join("?" for _ in active_roots)
                 cur = self._knowledge_conn.execute(
@@ -212,12 +247,24 @@ class DualSqliteManager:
                     list(active_roots.keys()),
                 )
                 removed += cur.rowcount
+                if has_file_meta:
+                    cur = self._knowledge_conn.execute(
+                        f"DELETE FROM file_metadata WHERE root_id NOT IN ({placeholders})",  # noqa: S608
+                        list(active_roots.keys()),
+                    )
+                    removed += cur.rowcount
                 for root_id, revision in active_roots.items():
                     cur = self._knowledge_conn.execute(
                         "DELETE FROM document WHERE root_id = ? AND root_revision != ?",
                         (root_id, revision),
                     )
                     removed += cur.rowcount
+                    if has_file_meta:
+                        cur = self._knowledge_conn.execute(
+                            "DELETE FROM file_metadata WHERE root_id = ? AND root_revision != ?",
+                            (root_id, revision),
+                        )
+                        removed += cur.rowcount
             for doc_id in deleted_docs:
                 cur = self._knowledge_conn.execute("DELETE FROM document WHERE id = ?", (doc_id,))
                 removed += cur.rowcount

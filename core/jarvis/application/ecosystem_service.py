@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import uuid
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
+from jarvis.domain.ai_models import ProviderCapabilityFlags
 from jarvis.domain.licensing import LicenseValidationError, derive_license_obligations
 from jarvis.domain.models import (
     ErrorCode,
@@ -95,6 +97,22 @@ class EcosystemGovernanceService:
             raise EcosystemServiceError(
                 ErrorCode.DENIED, "Private LAN providers MUST use HTTPS/TLS (FR-AIP-06)."
             )
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise EcosystemServiceError(ErrorCode.INVALID_ARGS, "Private LAN endpoint URL missing hostname.")
+        # B20: verify hostname is strictly RFC1918/ULA private LAN, loopback, or .local/.lan mDNS (reject public hosts!)
+        is_private_host = host in ("localhost", "127.0.0.1", "::1") or host.endswith((".local", ".lan", ".internal"))
+        if not is_private_host:
+            try:
+                ip_obj = ipaddress.ip_address(host)
+                is_private_host = ip_obj.is_private or ip_obj.is_loopback
+            except ValueError:
+                is_private_host = False
+        if not is_private_host:
+            raise EcosystemServiceError(
+                ErrorCode.DENIED,
+                f"Host '{host}' is not a private LAN / RFC1918 / .local address; public cloud endpoints cannot register as authorized_lan.",
+            )
         if not reg.consent_acknowledged:
             raise EcosystemServiceError(
                 ErrorCode.APPROVAL_REQUIRED,
@@ -107,6 +125,16 @@ class EcosystemGovernanceService:
             )
 
         now_iso = self._clock.now_utc().isoformat()
+        caps_model = ProviderCapabilityFlags(
+            streaming=True,
+            structured_json=True,
+            thinking_control=False,
+            cancelable=True,
+            max_context_tokens=4096,
+            tls_fingerprint_sha256=reg.tls_fingerprint_sha256.lower(),
+            allowed_data_scopes=tuple(reg.allowed_data_scopes),
+            allow_cross_zone_fallback=False,
+        )
         caps_meta = {
             "tls_fingerprint_sha256": reg.tls_fingerprint_sha256.lower(),
             "allowed_data_scopes": list(reg.allowed_data_scopes),
@@ -131,7 +159,7 @@ class EcosystemGovernanceService:
                     TrustZone.PRIVATE_LAN.value,
                     reg.endpoint_url.strip(),
                     reg.credential_vault_ref,
-                    json.dumps(caps_meta, sort_keys=True),
+                    caps_model.model_dump_json(),
                     SupportTier.EXPERIMENTAL.value,
                 ),
             )

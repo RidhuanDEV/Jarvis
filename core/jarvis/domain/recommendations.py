@@ -252,3 +252,93 @@ def recommend_configuration(snapshot: HardwareSnapshot) -> HardwareRecommendatio
         reasons=tuple(reasons),
         warnings=tuple(warnings),
     )
+
+
+class RuntimeGovernanceDecision(StrictModel):
+    """Hardware-aware live runtime resource governor output (B20, NFR-14, DEC-016)."""
+
+    effective_ai_mode: AiProfileMode
+    effective_backend: BackendPreference
+    effective_max_ram_mib: int
+    effective_max_vram_mib: int
+    effective_fps_target: FpsTarget
+    unload_vram_now: bool
+    fallback_to_direct: bool
+    throttle_reasons: tuple[str, ...] = ()
+
+
+class DynamicResourceGovernor:
+    """Evaluates live hardware, battery, gaming pressure, idle VRAM TTL, and LLM health (B20, pure domain)."""
+
+    def __init__(self, *, idle_vram_unload_seconds: int = 300) -> None:
+        self._idle_vram_unload_seconds = max(30, idle_vram_unload_seconds)
+
+    def evaluate(
+        self,
+        snapshot: HardwareSnapshot,
+        *,
+        requested_mode: AiProfileMode,
+        idle_seconds: float = 0.0,
+        gaming_or_fullscreen_active: bool = False,
+        llm_runtime_healthy: bool = True,
+    ) -> RuntimeGovernanceDecision:
+        rec = recommend_configuration(snapshot)
+        reasons: list[str] = []
+        mode = requested_mode
+        backend = rec.recommended_backend
+        max_ram = rec.recommended_max_ram_mib
+        max_vram = rec.recommended_max_vram_mib
+        fps = rec.recommended_fps_target
+        unload_vram = False
+        fallback_direct = False
+
+        if not llm_runtime_healthy and requested_mode != AiProfileMode.DIRECT:
+            mode = AiProfileMode.DIRECT
+            backend = BackendPreference.CPU
+            max_vram = 0
+            fallback_direct = True
+            reasons.append("Local LLM runtime unhealthy/crashed; degraded safely to offline Direct Mode.")
+
+        if snapshot.power_state == PowerState.BATTERY_SAVER:
+            if mode in (AiProfileMode.QUALITY, AiProfileMode.BALANCED, AiProfileMode.PERFORMANCE):
+                mode = AiProfileMode.ECO
+            fps = FpsTarget.FPS_30
+            max_vram = min(max_vram, 1536)
+            reasons.append("Battery Saver active; capped visuals to 30 FPS and AI to Eco budget.")
+        elif snapshot.power_state == PowerState.BATTERY:
+            fps = FpsTarget.FPS_30
+            reasons.append("On battery power; conservative 30 FPS visual pacing active.")
+
+        if gaming_or_fullscreen_active:
+            if mode != AiProfileMode.DIRECT:
+                mode = AiProfileMode.ECO
+            max_vram = 0
+            backend = BackendPreference.CPU
+            fps = FpsTarget.FPS_30
+            unload_vram = True
+            reasons.append("Fullscreen/gaming workload active; yielding GPU VRAM and capping background load.")
+
+        if idle_seconds >= self._idle_vram_unload_seconds and max_vram > 0:
+            unload_vram = True
+            reasons.append(
+                f"Idle for {int(idle_seconds)}s (>= {self._idle_vram_unload_seconds}s TTL); scheduling VRAM model unload."
+            )
+
+        # Memory pressure guard: if available RAM drops below 1.5 GiB, shrink RAM cap and drop to Eco/Direct
+        avail_mib = int(snapshot.ram_available_bytes // (1024 * 1024))
+        if avail_mib > 0 and avail_mib < 1536:
+            max_ram = min(max_ram, max(512, avail_mib // 2))
+            if mode in (AiProfileMode.QUALITY, AiProfileMode.BALANCED):
+                mode = AiProfileMode.ECO
+            reasons.append(f"Low available system RAM ({avail_mib} MiB); reduced active memory budget.")
+
+        return RuntimeGovernanceDecision(
+            effective_ai_mode=mode,
+            effective_backend=backend,
+            effective_max_ram_mib=max_ram,
+            effective_max_vram_mib=max_vram,
+            effective_fps_target=fps,
+            unload_vram_now=unload_vram,
+            fallback_to_direct=fallback_direct,
+            throttle_reasons=tuple(reasons),
+        )

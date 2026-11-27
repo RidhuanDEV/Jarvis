@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Cpu, HardDrive, Layers, Scale, ShieldCheck } from 'lucide-react'
+import { Cpu, HardDrive, Layers, Mic, Scale, ShieldCheck } from 'lucide-react'
 import type {
   FpsTarget,
   HardwareCapabilitiesResponse,
@@ -8,6 +8,7 @@ import type {
   StorageLocation,
   SupportTier,
   VisualQualityTier,
+  VoiceDiagnosticsResponse,
 } from '../lib/contracts'
 import type { FrameTelemetrySnapshot } from '../lib/visualEngine'
 
@@ -255,19 +256,33 @@ export function RuntimeVisualPanel({
   fpsTarget,
   detectedRefreshHz,
   telemetry,
+  voiceDiagnostics,
   onOwnershipChange,
   onQualityChange,
   onFpsChange,
+  onSelectAudioDevices,
+  onSpeechRateChange,
+  onReplayTranscript,
 }: {
   readonly ownershipMode: RuntimeOwnershipMode
   readonly qualityTier: VisualQualityTier
   readonly fpsTarget: FpsTarget
   readonly detectedRefreshHz: number
   readonly telemetry: FrameTelemetrySnapshot
+  readonly voiceDiagnostics?: VoiceDiagnosticsResponse | null
   readonly onOwnershipChange: (mode: RuntimeOwnershipMode) => void
   readonly onQualityChange: (tier: VisualQualityTier) => void
   readonly onFpsChange: (fps: FpsTarget) => void
+  readonly onSelectAudioDevices?: (inputId: string | null, outputId: string | null) => void
+  readonly onSpeechRateChange?: (rate: number) => void
+  readonly onReplayTranscript?: (transcript: string) => void
 }) {
+  const [replayInput, setReplayInput] = useState('')
+  const [selectedInId, setSelectedInId] = useState('')
+  const [selectedOutId, setSelectedOutId] = useState('')
+  const diag = voiceDiagnostics?.diagnostics ?? null
+  const inputEndpoints = (voiceDiagnostics?.endpoints ?? []).filter((e) => e.direction === 'input')
+  const outputEndpoints = (voiceDiagnostics?.endpoints ?? []).filter((e) => e.direction === 'output')
   const ownershipOptions: ReadonlyArray<{ id: RuntimeOwnershipMode; label: string; desc: string }> = [
     { id: 'none', label: 'Direct Mode Only (0 Runtime)', desc: 'Perintah deterministik penuh offline tanpa memuat LLM.' },
     { id: 'managed_local', label: 'JARVIS-Managed Local', desc: 'Diawasi Job Object KILL_ON_JOB_CLOSE (≤ 5 detik bersih saat tutup).' },
@@ -371,6 +386,136 @@ export function RuntimeVisualPanel({
             <div>Dropped: {telemetry.droppedFrames}</div>
           </div>
         </div>
+      </div>
+
+      {/* Stage G3 (B11/B12): Voice Lab & Audio Pipeline Diagnostics */}
+      <div
+        className="space-y-4 rounded-xl border p-5 md:col-span-2"
+        style={{ backgroundColor: 'var(--surface-panel)', borderColor: 'var(--border-subtle)' }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Mic className="h-4 w-4" style={{ color: 'var(--accent-core)' }} aria-hidden="true" />
+            <h2 className="text-sm font-semibold">Voice Lab &amp; Diagnostik Audio (B11 / B12)</h2>
+          </div>
+          <span className="font-mono-tabular text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {diag
+              ? `${diag.vad_engine} · ${diag.stt_language_mode} · Echo Guard: ${diag.voice_barge_in_allowed ? 'Headset Barge-In' : 'Speaker Guard'}`
+              : 'Mode Pratinjau (hubungkan Core lokal untuk telemetri audio live)'}
+          </span>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div
+            className="font-mono-tabular rounded-lg border p-3 text-xs"
+            style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div style={{ color: 'var(--text-muted)' }}>Sinyal &amp; Buffer RAM-Only</div>
+            <div className="mt-1.5 space-y-1">
+              <div>RMS / Noise Floor: {diag ? `${diag.live_rms} / ${diag.noise_floor_rms}` : '—'}</div>
+              <div>Clipping / Drops: {diag ? `${diag.clipping_events} / ${diag.queue_overflow_drops}` : '0 / 0'}</div>
+              <div>Confidence / Lang: {diag ? `${diag.last_confidence} (${diag.last_detected_language})` : '—'}</div>
+            </div>
+          </div>
+
+          <div
+            className="space-y-2 rounded-lg border p-3 text-xs"
+            style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div style={{ color: 'var(--text-muted)' }}>Perangkat Input / Output Aktif</div>
+            <select
+              aria-label="Pilih mikrofon Voice Lab"
+              value={selectedInId}
+              onChange={(e) => {
+                setSelectedInId(e.target.value)
+                onSelectAudioDevices?.(e.target.value || null, selectedOutId || null)
+              }}
+              className="w-full rounded border px-2 py-1 text-xs"
+              style={{ backgroundColor: 'var(--surface-elevated)', borderColor: 'var(--border-strong)' }}
+            >
+              <option value="">{diag?.selected_input_device ?? 'OS Default Input'}</option>
+              {inputEndpoints.map((ep) => (
+                <option key={ep.id} value={ep.id}>
+                  {ep.name}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Pilih speaker atau headset Voice Lab"
+              value={selectedOutId}
+              onChange={(e) => {
+                setSelectedOutId(e.target.value)
+                onSelectAudioDevices?.(selectedInId || null, e.target.value || null)
+              }}
+              className="w-full rounded border px-2 py-1 text-xs"
+              style={{ backgroundColor: 'var(--surface-elevated)', borderColor: 'var(--border-strong)' }}
+            >
+              <option value="">{diag?.selected_output_device ?? 'OS Default Output'}</option>
+              {outputEndpoints.map((ep) => (
+                <option key={ep.id} value={ep.id}>
+                  {ep.name} ({ep.form_factor})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div
+            className="space-y-2 rounded-lg border p-3 text-xs"
+            style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div style={{ color: 'var(--text-muted)' }}>Kecepatan Suara (TTS Speech Rate)</div>
+            <div className="flex flex-wrap gap-1.5">
+              {([0.85, 1.0, 1.15, 1.3] as const).map((rate) => {
+                const active = Math.abs((diag?.speech_rate ?? 1.0) - rate) < 0.03
+                return (
+                  <button
+                    key={rate}
+                    type="button"
+                    onClick={() => onSpeechRateChange?.(rate)}
+                    className="font-mono-tabular rounded border px-2.5 py-1 text-xs transition-colors hover:bg-[#1c2c44]"
+                    style={{
+                      borderColor: active ? 'var(--accent-core)' : 'var(--border-subtle)',
+                      backgroundColor: active ? 'var(--accent-core-dim)' : 'var(--surface-elevated)',
+                      color: active ? 'var(--accent-core)' : 'var(--text-primary)',
+                    }}
+                  >
+                    {rate}x
+                  </button>
+                )
+              })}
+            </div>
+            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {diag?.echo_guard_reason ?? 'Raw audio diagnostik nonaktif secara default (RAM-only).'}
+            </div>
+          </div>
+        </div>
+
+        <form
+          onSubmit={(ev) => {
+            ev.preventDefault()
+            if (!replayInput.trim()) return
+            onReplayTranscript?.(replayInput.trim())
+            setReplayInput('')
+          }}
+          className="flex flex-wrap gap-2"
+        >
+          <input
+            type="text"
+            aria-label="Koreksi dan putar ulang transkrip suara"
+            placeholder="Koreksi transkrip suara & uji ulang lewat Policy Engine (mis: Buka kalkulator.)..."
+            value={replayInput}
+            onChange={(e) => setReplayInput(e.target.value)}
+            className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-xs"
+            style={{ backgroundColor: 'var(--surface-canvas)', borderColor: 'var(--border-strong)' }}
+          />
+          <button
+            type="submit"
+            className="rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors hover:brightness-110 active:scale-[0.99]"
+            style={{ backgroundColor: 'var(--accent-core)', color: '#080d17' }}
+          >
+            Putar Ulang Transkrip
+          </button>
+        </form>
       </div>
     </section>
   )

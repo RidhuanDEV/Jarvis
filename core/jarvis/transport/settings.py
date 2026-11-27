@@ -23,6 +23,9 @@ class CoreStartupSettings(BaseSettings):
     release_sha: str = Field(default="dev-local", min_length=1, max_length=64)
     base_data_dir: Path | None = None
     base_cache_dir: Path | None = None
+    runtimes_dir: Path | None = None
+    models_dir: Path | None = None
+    auto_start_local_llm: bool = True
     auth_token: str = Field(default_factory=lambda: secrets.token_hex(32))
 
     @field_validator("auth_token")

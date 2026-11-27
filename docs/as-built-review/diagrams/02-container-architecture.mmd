@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph DesktopProc["Process 1: jarvis-desktop.exe (Tauri 2 + Rust)"]
+        WebView["WebView2 React 19 UI (12 Tabs, Zustand, SVG OrbitalCore)"]
+        RustBroker["Rust Broker (41 Tauri Commands, reqwest 10s, Job Object, Mutex, Tray)"]
+        WebView <-->|"Tauri invoke() (19/41 cmds used)"| RustBroker
+    end
+
+    subgraph CoreProc["Process 2: python.exe -m jarvis.transport (FastAPI / Uvicorn)"]
+        API["FastAPI App (96 Routes, Bearer Auth, Host/Origin Middleware)"]
+        Services["20 Application Services + PolicyEngine + DeterministicRouter"]
+        VoiceEng["LiveVoiceEngine Threads (sounddevice + OWW + Silero + Whisper + Piper)"]
+        CoreSup["WindowsJobProcessSupervisor (Job Object #2)"]
+        API --> Services
+        VoiceEng <-->|"asyncio.run_coroutine_threadsafe"| Services
+        Services --> CoreSup
+    end
+
+    subgraph LlmProc["Process 3: llama-server.exe (Managed Local Worker)"]
+        Qwen["Qwen3-4B / 1.7B GGUF (CUDA/Vulkan/CPU, OpenAI HTTP + SSE)"]
+    end
+
+    subgraph Storage["Local Persistence (%LOCALAPPDATA%)"]
+        CoreDB[("jarvis_core.db (Plain SQLite WAL + AES-GCM sensitive memory)")]
+        KnowDB[("jarvis_knowledge.db (Plain SQLite WAL + FTS5 BM25)")]
+        Vault[("Windows Credential Manager (keyring DEK)")]
+        Models[("Local Runtime & Model Dirs (GGUF, Whisper, Piper, ONNX)")]
+    end
+
+    RustBroker <-->|"HTTP 127.0.0.1:port + Bearer (stdin-piped); NO Named Pipe, NO SSE bridge"| API
+    CoreSup -->|"Spawns & terminates"| LlmProc
+    Services <-->|"HTTP 127.0.0.1:port (no --api-key)"| Qwen
+    Services <--> CoreDB
+    Services <--> KnowDB
+    Services <--> Vault
+    VoiceEng -.->|"Reads models (no SHA-256)"| Models
+    CoreSup -.->|"Executes binary (no SHA-256)"| Models

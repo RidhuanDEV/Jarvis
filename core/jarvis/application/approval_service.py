@@ -317,6 +317,99 @@ class ApprovalService:
         )
         return target_state
 
+    def consume_approved_for_execution(
+        self,
+        approval_id: str,
+        *,
+        expected_bound_hash: str,
+        session_id: str,
+        actor_ref: str,
+        expected_tool_id: str | None = None,
+    ) -> str:
+        """Atomically consume a previously GUI-approved R2 challenge for single-use execution (IR-03, B04)."""
+        with self._db.core_tx() as conn:
+            row = conn.execute(
+                """
+                SELECT a.id, a.action_run_id, a.bound_hash, a.actor_ref, a.session_ref, a.state, a.consumed_at,
+                       ar.tool_id, ar.state AS run_state
+                FROM approval a
+                JOIN action_run ar ON ar.id = a.action_run_id
+                WHERE a.id = ?
+                """,
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                raise ApprovalError(ErrorCode.NOT_FOUND, f"Approval '{approval_id}' not found.")
+            if str(row["state"]) != ApprovalState.APPROVED.value or row["consumed_at"] is None:
+                raise ApprovalError(
+                    ErrorCode.DENIED,
+                    f"Approval '{approval_id}' is not in GUI-approved state ('{row['state']}').",
+                )
+            if str(row["session_ref"]) != session_id or str(row["actor_ref"]) != actor_ref:
+                raise ApprovalError(ErrorCode.DENIED, "Approval does not belong to the active local session.")
+            if not hmac.compare_digest(expected_bound_hash, str(row["bound_hash"])):
+                raise ApprovalError(ErrorCode.DENIED, "Approval bound_hash does not match execution target.")
+            if expected_tool_id is not None and str(row["tool_id"]) != expected_tool_id:
+                raise ApprovalError(ErrorCode.DENIED, "Approval tool_id does not match requested execution tool.")
+            cur = conn.execute(
+                """
+                UPDATE action_run
+                SET state = 'running'
+                WHERE id = ? AND state = 'pending'
+                """,
+                (str(row["action_run_id"]),),
+            )
+            if cur.rowcount != 1:
+                raise ApprovalError(
+                    ErrorCode.DENIED,
+                    f"Approval '{approval_id}' has already been executed and cannot be replayed.",
+                )
+            return str(row["action_run_id"])
+
+    def cancel_pending_for_tools(
+        self, tool_ids: tuple[str, ...], *, reason: str, correlation_id: str
+    ) -> int:
+        """Atomically cancel pending R2 approvals for tools whose capability grant was revoked (B02)."""
+        if not tool_ids:
+            return 0
+        now_iso = self._clock.now_utc().isoformat()
+        tool_set = frozenset(tool_ids)
+        with self._db.core_tx() as conn:
+            all_pending = conn.execute(
+                """
+                SELECT a.id, a.action_run_id, ar.tool_id
+                FROM approval a
+                JOIN action_run ar ON ar.id = a.action_run_id
+                WHERE a.state = 'pending'
+                """
+            ).fetchall()
+            rows = [r for r in all_pending if str(r["tool_id"]) in tool_set]
+            if not rows:
+                return 0
+            for row in rows:
+                conn.execute(
+                    "UPDATE approval SET state = 'canceled', consumed_at = ? WHERE id = ? AND state = 'pending'",
+                    (now_iso, str(row["id"])),
+                )
+                conn.execute(
+                    "UPDATE action_run SET state = 'canceled', outcome_code = 'CANCELED', finished_at = ? WHERE id = ?",
+                    (now_iso, str(row["action_run_id"])),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_event(
+                    id, correlation_id, action_run_id, actor, event_type, outcome, redacted_meta_json, timestamp
+                ) VALUES (?, ?, NULL, 'system', 'approval.revoked_canceled', 'canceled', ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    correlation_id,
+                    json.dumps({"reason": reason, "canceled_count": len(rows)}),
+                    now_iso,
+                ),
+            )
+        return len(rows)
+
     def cancel_all_pending_on_lock(self, *, reason: str, correlation_id: str) -> int:
         """Immediately cancel all pending R2 approvals on OS lock or system suspend (BR-21)."""
         now_iso = self._clock.now_utc().isoformat()

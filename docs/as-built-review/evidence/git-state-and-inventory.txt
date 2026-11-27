@@ -1,0 +1,86 @@
+# J.A.R.V.I.S. (v0.2.1) — Sanitized Git Baseline & Source Inventory
+Audit Timestamp (UTC): 2026-11-26T23:43:39Z
+Git HEAD Commit: 455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5
+Tracked Git Files: 170
+
+## Git Working-Tree Status (Excluding docs/as-built-review/)
+## main...origin/main
+ M apps/desktop/src-tauri/Cargo.toml
+ M apps/desktop/src-tauri/src/commands.rs
+ M apps/desktop/src-tauri/src/core_launcher.rs
+ M apps/desktop/src-tauri/src/lib.rs
+ M apps/desktop/src-tauri/tauri.conf.json
+ M apps/desktop/src/App.tsx
+ M apps/desktop/src/components/OrbitalCore.tsx
+ M apps/desktop/src/lib/brokerClient.ts
+ M apps/desktop/src/lib/contracts.ts
+ M core/jarvis/application/ai_registry_service.py
+ M core/jarvis/application/license_service.py
+ M core/jarvis/application/turn_orchestrator.py
+ M core/jarvis/domain/router.py
+ M core/jarvis/infrastructure/providers/llama_cpp_adapter.py
+ M core/jarvis/transport/app.py
+ M core/jarvis/transport/settings.py
+ M core/pyproject.toml
+ M core/uv.lock
+ M scripts/install_local_windows.ps1
+?? apps/desktop/src-tauri/src/single_instance.rs
+?? core/jarvis/infrastructure/live_voice_engine.py
+?? core/jarvis/infrastructure/providers/local_runtime_manager.py
+?? core/jarvis/platform/windows/screen_capture.py
+?? docs/
+?? tests/unit/test_voice_wake_and_llm_conversation.py
+
+## Tracked Working-Tree Diff Stat (Pre-Existing Uncommitted Changes Before Audit)
+apps/desktop/src-tauri/Cargo.toml                  |   1 +
+ apps/desktop/src-tauri/src/commands.rs             |  27 ++
+ apps/desktop/src-tauri/src/core_launcher.rs        |  28 +-
+ apps/desktop/src-tauri/src/lib.rs                  |  49 +-
+ apps/desktop/src-tauri/tauri.conf.json             |   4 +-
+ apps/desktop/src/App.tsx                           | 293 ++++++++++--
+ apps/desktop/src/components/OrbitalCore.tsx        |  24 +-
+ apps/desktop/src/lib/brokerClient.ts               |  39 ++
+ apps/desktop/src/lib/contracts.ts                  |  36 ++
+ core/jarvis/application/ai_registry_service.py     |  28 ++
+ core/jarvis/application/license_service.py         |  40 ++
+ core/jarvis/application/turn_orchestrator.py       | 397 +++++++++++++++--
+ core/jarvis/domain/router.py                       | 138 +++++-
+ .../infrastructure/providers/llama_cpp_adapter.py  |  79 ++++
+ core/jarvis/transport/app.py                       | 194 +++++++-
+ core/jarvis/transport/settings.py                  |   3 +
+ core/pyproject.toml                                |  31 +-
+ core/uv.lock                                       | 492 ++++++++++++++++++++-
+ scripts/install_local_windows.ps1                  |  43 +-
+ 19 files changed, 1846 insertions(+), 100 deletions(-)
+
+## Source Line Count Summary by Top-Level Directory (Excluding .venv/node_modules/target/dist/as-built-review)
+  .github                     :      247 lines
+  <root>                      :    1,473 lines
+  JARVIS-SDLC-v0.2.1          :    1,285 lines
+  apps                        :   15,308 lines
+  contracts                   :      358 lines
+  core                        :   18,012 lines
+  planning                    :    1,123 lines
+  scripts                     :      450 lines
+  tests                       :    3,585 lines
+
+## Repository File Count by Extension (Excluding Build/Vendor Caches & Audit Output)
+  <no-ext>        :    195 files
+  .py             :     76 files
+  .md             :     36 files
+  .json           :     20 files
+  .tsx            :     13 files
+  .rs             :      8 files
+  .ts             :      7 files
+  .sql            :      3 files
+  .gz             :      2 files
+  .lock           :      2 files
+  .png            :      2 files
+  .toml           :      2 files
+  .yml            :      2 files
+  .css            :      1 files
+  .example        :      1 files
+  .html           :      1 files
+  .ico            :      1 files
+  .ps1            :      1 files
+  .tag            :      1 files

@@ -31,6 +31,16 @@ dependencies = [
 nvidia = [
     "nvidia-ml-py>=12.560.30",
 ]
+voice = [
+    "faster-whisper>=1.1.0",
+    "numpy>=1.26.0,<2.3.0",
+    "onnxruntime>=1.20.0",
+    "openwakeword>=0.6.0",
+    "sounddevice>=0.5.1",
+]
+tts-piper = [
+    "piper-tts>=1.2.0",
+]
 dev = [
     "hypothesis>=6.122.0",
     "import-linter>=2.1",
@@ -66,7 +76,26 @@ disallow_any_explicit = false
 packages = ["jarvis"]
 
 [[tool.mypy.overrides]]
-module = ["sqlite_vec", "sqlite_vec.*", "pynvml", "pynvml.*", "pypdfium2", "pypdfium2.*"]
+module = [
+    "sqlite_vec",
+    "sqlite_vec.*",
+    "pynvml",
+    "pynvml.*",
+    "pypdfium2",
+    "pypdfium2.*",
+    "sounddevice",
+    "sounddevice.*",
+    "faster_whisper",
+    "faster_whisper.*",
+    "onnxruntime",
+    "onnxruntime.*",
+    "openwakeword",
+    "openwakeword.*",
+    "piper",
+    "piper.*",
+    "numpy",
+    "numpy.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

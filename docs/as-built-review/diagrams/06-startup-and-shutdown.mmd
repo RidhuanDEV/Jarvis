@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant User
+    participant Rust as jarvis-desktop.exe (Rust)
+    participant Core as python.exe (FastAPI Core)
+    participant LLM as llama-server.exe
+    participant UI as WebView2 (React)
+
+    User->>Rust: Launch jarvis-desktop.exe
+    Rust->>Rust: CreateMutexW single-instance check (focus & exit if duplicate)
+    Rust->>Rust: Pick ephemeral 127.0.0.1 port + OsRng 256-bit token
+    Rust->>Rust: discover_core_runtime() (env / repo / runtime-pointer.json)
+    Rust->>Core: Spawn under Win32 Job Object #1 (stdout/stderr = NULL!)
+    Rust->>Core: Pipe token via stdin + close EOF
+    Core->>Core: DualSqliteManager.initialize() + migrations + seed profiles/licenses
+    Core->>Core: Hardware discover() (sync) + bind Uvicorn 127.0.0.1:port
+    Core->>LLM: Async lifespan task: spawn llama-server under Job Object #2 (poll /health <=45s)
+    Rust->>UI: Show main window (1280x800) + Tray (3 items)
+    UI->>Rust: waitForLiveCoreStatus (max 5s cliff -> else preview_fixture!)
+    UI->>Rust: loadFoundationData() (caps, storage, licenses ONLY — 0 user data hydrated)
+    UI->>Rust: setInterval(350ms) -> get_live_voice_status
+
+    Note over User,LLM: Shutdown (Window X close exits app — does NOT hide to tray!)
+    User->>Rust: Close Window X or Tray Quit
+    Rust->>Core: supervisor.close_all_managed() (TerminateJobObject #1)
+    Core--xLLM: Killed via Job Object #2 (or Core lifespan finally: stop + db.close)

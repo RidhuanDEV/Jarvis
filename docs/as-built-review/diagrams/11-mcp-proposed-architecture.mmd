@@ -1,0 +1,29 @@
+flowchart TB
+    USER["Owner (Voice / Desktop GUI)"] --> ORCH["TurnOrchestrator & Bounded Tool Planner"]
+    ORCH --> GATE["AuthorizedActionGateway\n(Single Authoritative Chokepoint)"]
+
+    subgraph POLICY["Trusted Python/Rust Security Kernel"]
+        P1["Tier-1 Auto-Allow\n(Scoped Read / App Launch / Volume)"]
+        P2["Tier-2 Explicit GUI Approval\n(Diff + Snapshot Hash + Unlocked OS + Single-Use Nonce)"]
+        P3["Tier-3 Immutable Hard Ban\n(No Delete / No Recycle Bin / No Shell / No LOLBins)"]
+    end
+
+    GATE --> POLICY
+    GATE --> NATIVE["Fast Built-In Native Tools\n(Windows App Catalog, Safe File Search/Open,\nVolume/Media, Hardware, Memory Vault, Local RAG)"]
+    GATE --> MCPHOST["McpHostService (Opt-In Extensibility)\nNamespaced: mcp.<server>.<tool>\nTool-Schema SHA-256 Anti-Rug-Pull Pinning"]
+
+    subgraph ISOLATION["Per-Server OS & Security Isolation"]
+        M1["Stdio MCP Server A\n(Win32 Job Object + Stripped Env\n+ KILL_ON_JOB_CLOSE + Scoped Roots)"]
+        M2["Remote HTTPS MCP Server B\n(Offline-Mode Gated + DNS-Pinned Anti-SSRF\n+ Domain Allowlist)"]
+        CRED["Windows DPAPI / Credential Manager\n(Per-Server Secrets Never Exposed to LLM)"]
+    end
+
+    MCPHOST --> M1
+    MCPHOST --> M2
+    CRED -. "Injected Only to Owning Server" .-> M1
+    CRED -. "Auth Header Only" .-> M2
+
+    M1 --> TAINT["Tool Output Validator + BR-15 Tainting\n(Max 64 KiB + Secret Redaction + untrusted_origin=True)"]
+    M2 --> TAINT
+    TAINT --> ORCH
+    GATE --> AUDIT["Hash-Chained Audit Log (SQLite)"]

@@ -1,12 +1,22 @@
 //! Platform-independent ProcessSupervisor trait + Windows Job Object KILL_ON_JOB_CLOSE (DEC-008, DEC-020, BR-AI-04, NFR-15).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+const MAX_STDERR_RING_LINES: usize = 120;
+
+fn redact_stderr_line(raw: &str) -> String {
+    if raw.to_ascii_lowercase().contains("bearer ") {
+        "[REDACTED_BEARER_LOG_LINE]".to_string()
+    } else {
+        raw.chars().take(400).collect()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +70,7 @@ pub trait ProcessSupervisor: Send + Sync {
     ) -> Result<(), SupervisorError>;
     fn is_alive(&self, pid: u32) -> bool;
     fn close_all_managed(&self) -> usize;
+    fn recent_stderr_lines(&self) -> Vec<String>;
 }
 
 #[cfg(windows)]
@@ -168,6 +179,7 @@ mod win_job {
 pub struct NativeProcessSupervisor {
     managed: Mutex<HashMap<u32, Child>>,
     external: Mutex<HashMap<u32, SupervisedProcess>>,
+    stderr_ring: Arc<Mutex<VecDeque<String>>>,
     #[cfg(windows)]
     job: Mutex<Option<win_job::WinJobHandle>>,
 }
@@ -177,6 +189,7 @@ impl NativeProcessSupervisor {
         Ok(Self {
             managed: Mutex::new(HashMap::new()),
             external: Mutex::new(HashMap::new()),
+            stderr_ring: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_STDERR_RING_LINES))),
             #[cfg(windows)]
             job: Mutex::new(Some(win_job::WinJobHandle::create_kill_on_close()?)),
         })
@@ -210,7 +223,7 @@ impl ProcessSupervisor for NativeProcessSupervisor {
                 Stdio::null()
             })
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -255,6 +268,26 @@ impl ProcessSupervisor for NativeProcessSupervisor {
                     )));
                 }
             }
+        }
+
+        // Drain child stderr into a bounded redacted ring buffer instead of discarding startup errors (DEF-08, B07)
+        if let Some(stderr) = child.stderr.take() {
+            let ring = Arc::clone(&self.stderr_ring);
+            let proc_label = label.to_string();
+            let _ = std::thread::Builder::new()
+                .name(format!("jarvis-stderr-{pid}"))
+                .spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines().map_while(Result::ok) {
+                        let cleaned = redact_stderr_line(&line);
+                        if let Ok(mut buf) = ring.lock() {
+                            if buf.len() >= MAX_STDERR_RING_LINES {
+                                buf.pop_front();
+                            }
+                            buf.push_back(format!("[{proc_label}] {cleaned}"));
+                        }
+                    }
+                });
         }
 
         self.managed.lock().unwrap().insert(pid, child);
@@ -322,6 +355,13 @@ impl ProcessSupervisor for NativeProcessSupervisor {
             }
         }
         count
+    }
+
+    fn recent_stderr_lines(&self) -> Vec<String> {
+        self.stderr_ring
+            .lock()
+            .map(|buf| buf.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

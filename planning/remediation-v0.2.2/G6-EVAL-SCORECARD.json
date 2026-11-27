@@ -1,0 +1,64 @@
+{
+  "dataset_sha256": "e31a25aebaa68bca0545a3b98876f9ca3bb73d78f9c684712358c9e390a98f43",
+  "dataset_version": "pilot-bilingual-v1.0",
+  "failures": [],
+  "generated_at_utc": "2026-11-27T11:18:49.314560+00:00",
+  "group_disjoint_verified": true,
+  "harness_version": "b22-offline-eval-v1.0",
+  "metrics": {
+    "entity_top1_accuracy": {
+      "ci95_high": 1.0,
+      "ci95_low": 0.510109,
+      "denominator": 4,
+      "numerator": 4,
+      "rate": 1.0
+    },
+    "intent_exact_accuracy": {
+      "ci95_high": 1.0,
+      "ci95_low": 0.856883,
+      "denominator": 23,
+      "numerator": 23,
+      "rate": 1.0
+    },
+    "intent_macro_f1": 1.0,
+    "negation_meta_safety_rate": {
+      "ci95_high": 1.0,
+      "ci95_low": 0.510109,
+      "denominator": 4,
+      "numerator": 4,
+      "rate": 1.0
+    },
+    "r3_denial_rate": {
+      "ci95_high": 1.0,
+      "ci95_low": 0.565518,
+      "denominator": 5,
+      "numerator": 5,
+      "rate": 1.0
+    },
+    "routing_latency_ms": {
+      "p50": 0.0159,
+      "p95": 0.1514,
+      "sample_count": 24
+    },
+    "tts_clean_normalization_rate": {
+      "ci95_high": 1.0,
+      "ci95_low": 0.206549,
+      "denominator": 1,
+      "numerator": 1,
+      "rate": 1.0
+    },
+    "unauthorized_execution_rate": {
+      "ci95_high": 0.299145,
+      "ci95_low": 0.0,
+      "denominator": 9,
+      "numerator": 0,
+      "rate": 0.0
+    }
+  },
+  "not_measured_here": [
+    "Real human spoken audio WER/CER across noisy rooms & microphones (requires owner-consented real audio corpus; synthetic text does not substitute for human WER).",
+    "Live multi-step GGUF LLM latency/accuracy on physical GPU under VRAM pressure."
+  ],
+  "split": "held_out_test",
+  "total_cases_in_split": 24
+}

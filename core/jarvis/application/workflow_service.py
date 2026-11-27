@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import Field
 
+from jarvis.application.approval_service import ApprovalError, ApprovalService
 from jarvis.domain.models import (
     ActionOutcomeState,
     ErrorCode,
@@ -106,12 +108,46 @@ class WorkflowEngineService:
         db: DualSqliteManager,
         policy_engine: PolicyEngine,
         clock: ClockPort,
+        *,
+        approval_service: ApprovalService | None = None,
+        allow_simulated_steps: bool = False,
+        step_executor: (
+            Callable[[ToolStepProposal, SessionContext, str], tuple[ActionOutcomeState, bool, str]] | None
+        ) = None,
+        async_step_executor: (
+            Callable[
+                [ToolStepProposal, SessionContext, str],
+                Awaitable[tuple[ActionOutcomeState, bool, str]],
+            ]
+            | None
+        ) = None,
     ) -> None:
         self._db = db
         self._policy = policy_engine
         self._clock = clock
+        self._approval_service = approval_service
+        self._allow_simulated_steps = allow_simulated_steps
+        self._step_executor = step_executor
+        self._async_step_executor = async_step_executor
         self._exec_lock = threading.Lock()
         self._active_side_effect_run: str | None = None
+
+    def bind_step_executor(
+        self,
+        executor: Callable[[ToolStepProposal, SessionContext, str], tuple[ActionOutcomeState, bool, str]],
+    ) -> None:
+        """Bind a real synchronous policy-checked tool step executor for Stage G4+ live workflows (B15)."""
+        self._step_executor = executor
+
+    def bind_async_step_executor(
+        self,
+        executor: Callable[
+            [ToolStepProposal, SessionContext, str],
+            Awaitable[tuple[ActionOutcomeState, bool, str]],
+        ],
+    ) -> None:
+        """Bind a real async policy-checked tool step executor for FastAPI live workflows (B15)."""
+        self._async_step_executor = executor
 
     def _validate_steps_declarative(
         self, steps: tuple[ToolStepProposal, ...], *, total_timeout_seconds: int
@@ -279,19 +315,43 @@ class WorkflowEngineService:
         session: SessionContext,
         grants: tuple[GrantRecord, ...],
         approved_bound_hash: str | None = None,
+        approval_id: str | None = None,
         cancel_after_step: int | None = None,
         simulate_unknown_at_step: int | None = None,
         correlation_id: str,
     ) -> WorkflowExecutionResult:
-        """Execute declarative workflow with single-active side-effect guard, R2 re-approval check & unknown reconciliation."""
+        """Execute declarative workflow with single-active side-effect guard, cryptographic R2 approval & no prod mocks."""
         wf = self.get_workflow(workflow_id)
         preview = self.dry_run_preview(workflow_id)
 
-        # FR-AUT-02: if any step is R2, approved_bound_hash MUST match current workflow revision & args!
-        if preview.requires_r2_approval and approved_bound_hash != preview.bound_hash:
+        # FR-AUT-02 / IR-03: R2 workflow requires BOTH bound_hash match AND a real consumed single-use GUI approval!
+        if preview.requires_r2_approval:
+            if approved_bound_hash != preview.bound_hash:
+                raise WorkflowServiceError(
+                    ErrorCode.APPROVAL_REQUIRED,
+                    "Workflow contains R2 step(s) or parameters changed after preview; fresh R2 approval required.",
+                )
+            if self._approval_service is not None:
+                if not approval_id:
+                    raise WorkflowServiceError(
+                        ErrorCode.APPROVAL_REQUIRED,
+                        "Self-echoing bound_hash is prohibited; a verified single-use GUI approval_id is required.",
+                    )
+                try:
+                    self._approval_service.consume_approved_for_execution(
+                        approval_id,
+                        expected_bound_hash=preview.bound_hash,
+                        session_id=session.session_id,
+                        actor_ref=session.actor_ref,
+                    )
+                except ApprovalError as exc:
+                    raise WorkflowServiceError(exc.code, str(exc)) from exc
+
+        # IR-12 / B15: Never fabricate fake step completion when neither real step_executor nor explicit test sim is enabled.
+        if self._step_executor is None and not self._allow_simulated_steps:
             raise WorkflowServiceError(
-                ErrorCode.APPROVAL_REQUIRED,
-                "Workflow contains R2 step(s) or parameters changed after preview; fresh R2 approval required.",
+                ErrorCode.UNSUPPORTED,
+                "Workflow step execution requires a verified real tool executor (fake step completion is prohibited).",
             )
 
         with self._exec_lock:
@@ -348,15 +408,205 @@ class WorkflowEngineService:
                     needs_reconcile = True
                     break
 
+                if self._step_executor is not None:
+                    step_state, _verified, step_note = self._step_executor(
+                        step, session, correlation_id
+                    )
+                    results.append(
+                        WorkflowStepRunResult(
+                            index=idx,
+                            tool_id=step.tool_id,
+                            state=step_state,
+                            idempotency_key=idem_key,
+                            note=step_note,
+                        )
+                    )
+                    if step_state != ActionOutcomeState.COMPLETED:
+                        if step_state == ActionOutcomeState.UNKNOWN:
+                            final_state = ActionOutcomeState.UNKNOWN
+                            needs_reconcile = True
+                        else:
+                            final_state = ActionOutcomeState.PARTIAL if idx > 1 else ActionOutcomeState.FAILED
+                        break
+                else:
+                    results.append(
+                        WorkflowStepRunResult(
+                            index=idx,
+                            tool_id=step.tool_id,
+                            state=ActionOutcomeState.COMPLETED,
+                            idempotency_key=idem_key,
+                            note="Simulated test step completion.",
+                        )
+                    )
+
+                if cancel_after_step == idx and idx < len(wf.steps):
+                    final_state = ActionOutcomeState.PARTIAL
+                    break
+
+            with self._db.core_tx() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO audit_event(
+                        id, correlation_id, action_run_id, actor, event_type, outcome, redacted_meta_json, timestamp
+                    ) VALUES (?, ?, NULL, ?, 'workflow.executed', ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        correlation_id,
+                        session.actor_ref,
+                        final_state.value,
+                        json.dumps(
+                            {
+                                "run_id": run_id,
+                                "workflow_id": wf.id,
+                                "steps_executed": len(results),
+                                "needs_reconciliation": needs_reconcile,
+                            }
+                        ),
+                        self._clock.now_utc().isoformat(),
+                    ),
+                )
+        finally:
+            with self._exec_lock:
+                self._active_side_effect_run = None
+
+        return WorkflowExecutionResult(
+            run_id=run_id,
+            workflow_id=wf.id,
+            state=final_state,
+            needs_user_reconciliation=needs_reconcile,
+            steps=tuple(results),
+        )
+
+    async def execute_workflow_async(
+        self,
+        workflow_id: str,
+        *,
+        session: SessionContext,
+        grants: tuple[GrantRecord, ...],
+        approved_bound_hash: str | None = None,
+        approval_id: str | None = None,
+        cancel_after_step: int | None = None,
+        simulate_unknown_at_step: int | None = None,
+        correlation_id: str,
+    ) -> WorkflowExecutionResult:
+        """Async declarative workflow execution for FastAPI routes without nested event loops (B15)."""
+        wf = self.get_workflow(workflow_id)
+        preview = self.dry_run_preview(workflow_id)
+
+        if preview.requires_r2_approval:
+            if approved_bound_hash != preview.bound_hash:
+                raise WorkflowServiceError(
+                    ErrorCode.APPROVAL_REQUIRED,
+                    "Workflow contains R2 step(s) or parameters changed after preview; fresh R2 approval required.",
+                )
+            if self._approval_service is not None:
+                if not approval_id:
+                    raise WorkflowServiceError(
+                        ErrorCode.APPROVAL_REQUIRED,
+                        "Self-echoing bound_hash is prohibited; a verified single-use GUI approval_id is required.",
+                    )
+                try:
+                    self._approval_service.consume_approved_for_execution(
+                        approval_id,
+                        expected_bound_hash=preview.bound_hash,
+                        session_id=session.session_id,
+                        actor_ref=session.actor_ref,
+                    )
+                except ApprovalError as exc:
+                    raise WorkflowServiceError(exc.code, str(exc)) from exc
+
+        if (
+            self._async_step_executor is None
+            and self._step_executor is None
+            and not self._allow_simulated_steps
+        ):
+            raise WorkflowServiceError(
+                ErrorCode.UNSUPPORTED,
+                "Workflow step execution requires a verified real tool executor (fake step completion is prohibited).",
+            )
+
+        with self._exec_lock:
+            if self._active_side_effect_run is not None:
+                raise WorkflowServiceError(
+                    ErrorCode.QUEUE_FULL, "Another side-effecting workflow is already active (BR-07)."
+                )
+            run_id = f"wfrun_{uuid.uuid4().hex[:12]}"
+            self._active_side_effect_run = run_id
+
+        results: list[WorkflowStepRunResult] = []
+        final_state = ActionOutcomeState.COMPLETED
+        needs_reconcile = False
+        now = self._clock.now_utc()
+
+        try:
+            for idx, step in enumerate(wf.steps, start=1):
+                idem_key = f"{run_id}:step:{idx}:{step.tool_id}"
+                decision = self._policy.evaluate_step(
+                    tool_id=step.tool_id,
+                    tool_version=step.version,
+                    args=step.args,
+                    session=session,
+                    grants=grants,
+                    now_utc=now,
+                )
+                if not decision.allowed and not (
+                    decision.requires_approval and approved_bound_hash == preview.bound_hash
+                ):
+                    results.append(
+                        WorkflowStepRunResult(
+                            index=idx,
+                            tool_id=step.tool_id,
+                            state=ActionOutcomeState.FAILED,
+                            idempotency_key=idem_key,
+                            note=decision.reason,
+                        )
+                    )
+                    final_state = ActionOutcomeState.PARTIAL if idx > 1 else ActionOutcomeState.FAILED
+                    break
+
+                if simulate_unknown_at_step == idx:
+                    results.append(
+                        WorkflowStepRunResult(
+                            index=idx,
+                            tool_id=step.tool_id,
+                            state=ActionOutcomeState.UNKNOWN,
+                            idempotency_key=idem_key,
+                            note="Adapter interrupted after dispatch; marked UNKNOWN without blind retry (BR-08).",
+                        )
+                    )
+                    final_state = ActionOutcomeState.UNKNOWN
+                    needs_reconcile = True
+                    break
+
+                if self._async_step_executor is not None:
+                    step_state, _verified, step_note = await self._async_step_executor(
+                        step, session, correlation_id
+                    )
+                elif self._step_executor is not None:
+                    step_state, _verified, step_note = self._step_executor(
+                        step, session, correlation_id
+                    )
+                else:
+                    step_state = ActionOutcomeState.COMPLETED
+                    step_note = "Simulated test step completion."
+
                 results.append(
                     WorkflowStepRunResult(
                         index=idx,
                         tool_id=step.tool_id,
-                        state=ActionOutcomeState.COMPLETED,
+                        state=step_state,
                         idempotency_key=idem_key,
-                        note="Verified step completion.",
+                        note=step_note,
                     )
                 )
+                if step_state != ActionOutcomeState.COMPLETED:
+                    if step_state == ActionOutcomeState.UNKNOWN:
+                        final_state = ActionOutcomeState.UNKNOWN
+                        needs_reconcile = True
+                    else:
+                        final_state = ActionOutcomeState.PARTIAL if idx > 1 else ActionOutcomeState.FAILED
+                    break
 
                 if cancel_after_step == idx and idx < len(wf.steps):
                     final_state = ActionOutcomeState.PARTIAL

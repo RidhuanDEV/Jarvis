@@ -10,12 +10,20 @@ use std::path::{Path, PathBuf};
 struct RuntimePointerFile {
     python_exe: String,
     core_dir: String,
+    #[serde(default)]
+    runtimes_dir: Option<String>,
+    #[serde(default)]
+    models_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CoreRuntimeSpec {
     pub python_exe: PathBuf,
     pub core_dir: PathBuf,
+    pub migrations_dir: Option<PathBuf>,
+    pub contracts_dir: Option<PathBuf>,
+    pub runtimes_dir: Option<PathBuf>,
+    pub models_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,20 +45,40 @@ pub fn pick_ephemeral_loopback_port() -> Result<u16, String> {
     Ok(port)
 }
 
-fn venv_python_in_core(core_dir: &Path) -> Option<PathBuf> {
+fn bundled_or_venv_python(base_dir: &Path, core_dir: &Path) -> Option<PathBuf> {
+    // B18: prefer standalone bundled embedded Python runtime BEFORE falling back to dev .venv!
     #[cfg(windows)]
     let candidates = [
+        base_dir.join("resources").join("python").join("python.exe"),
+        base_dir.join("python").join("python.exe"),
+        core_dir.join("python").join("python.exe"),
         core_dir.join(".venv").join("Scripts").join("python.exe"),
         core_dir.join("venv").join("Scripts").join("python.exe"),
     ];
     #[cfg(not(windows))]
     let candidates = [
+        base_dir.join("resources").join("python").join("bin").join("python3"),
+        base_dir.join("python").join("bin").join("python3"),
+        core_dir.join("python").join("bin").join("python3"),
         core_dir.join(".venv").join("bin").join("python"),
         core_dir.join("venv").join("bin").join("python"),
     ];
 
     for cand in candidates {
         if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+fn find_optional_dir(base_dir: &Path, core_dir: &Path, name: &str) -> Option<PathBuf> {
+    for cand in [
+        base_dir.join("resources").join(name),
+        core_dir.join(name),
+        base_dir.join(name),
+    ] {
+        if cand.is_dir() {
             return Some(cand);
         }
     }
@@ -65,17 +93,21 @@ fn has_core_entrypoint(core_dir: &Path) -> bool {
         .is_file()
 }
 
-fn search_ancestors_for_core(start: &Path) -> Option<CoreRuntimeSpec> {
+pub fn search_ancestors_for_core(start: &Path) -> Option<CoreRuntimeSpec> {
     let mut current = Some(start);
     for _ in 0..8 {
         let dir = current?;
-        for rel in ["core", "resources/core"] {
+        for rel in ["resources/core", "core"] {
             let core_dir = dir.join(rel);
             if has_core_entrypoint(&core_dir) {
-                if let Some(python_exe) = venv_python_in_core(&core_dir) {
+                if let Some(python_exe) = bundled_or_venv_python(dir, &core_dir) {
                     return Some(CoreRuntimeSpec {
                         python_exe,
+                        migrations_dir: find_optional_dir(dir, &core_dir, "migrations"),
+                        contracts_dir: find_optional_dir(dir, &core_dir, "contracts"),
                         core_dir,
+                        runtimes_dir: None,
+                        models_dir: None,
                     });
                 }
             }
@@ -107,9 +139,14 @@ fn read_runtime_pointer(path: &Path) -> Option<CoreRuntimeSpec> {
     let py_path = PathBuf::from(ptr.python_exe);
     let dir_path = PathBuf::from(ptr.core_dir);
     if py_path.is_file() && has_core_entrypoint(&dir_path) {
+        let base_dir = dir_path.parent().unwrap_or(dir_path.as_path());
         Some(CoreRuntimeSpec {
             python_exe: py_path,
+            migrations_dir: find_optional_dir(base_dir, &dir_path, "migrations"),
+            contracts_dir: find_optional_dir(base_dir, &dir_path, "contracts"),
             core_dir: dir_path,
+            runtimes_dir: ptr.runtimes_dir.map(PathBuf::from).filter(|p| p.is_dir()),
+            models_dir: ptr.models_dir.map(PathBuf::from).filter(|p| p.is_dir()),
         })
     } else {
         None
@@ -126,9 +163,20 @@ pub fn discover_core_runtime() -> Option<CoreRuntimeSpec> {
         let py_path = PathBuf::from(py);
         let dir_path = PathBuf::from(dir);
         if py_path.is_file() && has_core_entrypoint(&dir_path) {
+            let base_dir = dir_path.parent().unwrap_or(dir_path.as_path());
             return Some(CoreRuntimeSpec {
                 python_exe: py_path,
+                migrations_dir: std::env::var("JARVIS_MIGRATIONS_DIR")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(|| find_optional_dir(base_dir, &dir_path, "migrations")),
+                contracts_dir: std::env::var("JARVIS_CONTRACTS_DIR")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(|| find_optional_dir(base_dir, &dir_path, "contracts")),
                 core_dir: dir_path,
+                runtimes_dir: std::env::var("JARVIS_RUNTIMES_DIR").ok().map(PathBuf::from),
+                models_dir: std::env::var("JARVIS_MODELS_DIR").ok().map(PathBuf::from),
             });
         }
     }
@@ -181,10 +229,26 @@ pub fn spawn_local_core(
 
     let py_str = spec.python_exe.to_string_lossy().to_string();
     let core_dir_str = spec.core_dir.to_string_lossy().to_string();
+    let migrations_dir_str = spec
+        .migrations_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let contracts_dir_str = spec
+        .contracts_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let runtimes_dir_str = spec
+        .runtimes_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let models_dir_str = spec
+        .models_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
     let port_str = port.to_string();
     let stdin_secret = format!("{auth_token}\n");
 
-    let env_vars = [
+    let mut env_vars: Vec<(&str, &str)> = vec![
         ("JARVIS_ENV", "production"),
         ("JARVIS_BIND_HOST", "127.0.0.1"),
         ("JARVIS_BIND_PORT", port_str.as_str()),
@@ -192,6 +256,18 @@ pub fn spawn_local_core(
         ("PYTHONPATH", core_dir_str.as_str()),
         ("PYTHONUNBUFFERED", "1"),
     ];
+    if let Some(ref mg) = migrations_dir_str {
+        env_vars.push(("JARVIS_MIGRATIONS_DIR", mg.as_str()));
+    }
+    if let Some(ref ct) = contracts_dir_str {
+        env_vars.push(("JARVIS_CONTRACTS_DIR", ct.as_str()));
+    }
+    if let Some(ref rt) = runtimes_dir_str {
+        env_vars.push(("JARVIS_RUNTIMES_DIR", rt.as_str()));
+    }
+    if let Some(ref md) = models_dir_str {
+        env_vars.push(("JARVIS_MODELS_DIR", md.as_str()));
+    }
 
     match supervisor.spawn_managed_with_stdin_and_env(
         &py_str,
@@ -232,5 +308,37 @@ mod tests {
             assert!(spec.python_exe.is_file());
             assert!(has_core_entrypoint(&spec.core_dir));
         }
+    }
+
+    #[test]
+    fn discovers_bundled_embedded_python_without_venv() {
+        let base = std::env::temp_dir().join(format!(
+            "jarvis_b18_bundle_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let res = base.join("resources");
+        #[cfg(windows)]
+        let py_file = res.join("python").join("python.exe");
+        #[cfg(not(windows))]
+        let py_file = res.join("python").join("bin").join("python3");
+        let entry = res
+            .join("core")
+            .join("jarvis")
+            .join("transport")
+            .join("__main__.py");
+        std::fs::create_dir_all(py_file.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(res.join("migrations")).unwrap();
+        std::fs::create_dir_all(res.join("contracts")).unwrap();
+        std::fs::write(&py_file, b"stub").unwrap();
+        std::fs::write(&entry, b"# entry").unwrap();
+
+        let spec = search_ancestors_for_core(&base).expect("bundled embedded python discovered");
+        assert_eq!(spec.python_exe, py_file);
+        assert_eq!(spec.migrations_dir, Some(res.join("migrations")));
+        assert_eq!(spec.contracts_dir, Some(res.join("contracts")));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

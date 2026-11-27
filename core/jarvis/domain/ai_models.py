@@ -39,6 +39,10 @@ class ProviderCapabilityFlags(StrictModel):
     thinking_control: bool = True
     cancelable: bool = True
     max_context_tokens: int = Field(default=4096, ge=512, le=131072)
+    # B20 / DEF-35: optional Private LAN security pinning fields so GET /v1/providers validates cleanly without 500
+    tls_fingerprint_sha256: str | None = None
+    allowed_data_scopes: tuple[str, ...] = ()
+    allow_cross_zone_fallback: bool = False
 
 
 class ModelProviderRecord(StrictModel):

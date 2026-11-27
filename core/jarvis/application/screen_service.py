@@ -46,6 +46,7 @@ class ScreenAnalysisResult(StrictModel):
     window_title: str
     process_name: str
     extraction_method: Literal["uia", "ocr"]
+    capability_kind: Literal["window_metadata", "uia_text", "ocr"] = "window_metadata"
     redacted_text: str
     redactions_applied: int
     raw_frame_persisted: Literal[False] = False
@@ -114,8 +115,10 @@ class ScreenAwarenessService:
                     )
                 raise ScreenAwarenessError(ErrorCode.DENIED, reason)
 
-            # FR-SCR-04: redact high-risk secrets/tokens/keys BEFORE returning to model context or UI history
-            safe_text, redaction_count = redact_screen_secrets(obs.extracted_text)
+            # FR-SCR-04 / B17: redact secrets from BOTH window_title AND extracted_text BEFORE model/UI/audit!
+            safe_title, title_redactions = redact_screen_secrets(obs.window_title)
+            safe_text, text_redactions = redact_screen_secrets(obs.extracted_text)
+            redaction_count = title_redactions + text_redactions
 
             with self._db.core_tx() as conn:
                 conn.execute(
@@ -139,10 +142,14 @@ class ScreenAwarenessService:
                     ),
                 )
 
+            cap_kind: Literal["window_metadata", "uia_text", "ocr"] = (
+                "ocr" if obs.extraction_method == "ocr" else "window_metadata"
+            )
             return ScreenAnalysisResult(
-                window_title=obs.window_title,
+                window_title=safe_title,
                 process_name=obs.process_name,
                 extraction_method=obs.extraction_method,
+                capability_kind=cap_kind,
                 redacted_text=safe_text,
                 redactions_applied=redaction_count,
             )

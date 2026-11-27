@@ -1,0 +1,176 @@
+{
+  "gate_id": "G5",
+  "stage_name": "Standalone Packaging, Portable DEK Backup & Quiesced Migration, Hardware Governor & LAN Fix, Imperative HUD & WCAG AA, Transitive SBOM & Legal Compliance (B18-B21, B24)",
+  "generated_at_utc": "2026-11-27T10:07:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "git_diff_bytes": 513894,
+  "git_diff_sha256": "ef2dc2c750fb3451688b2c558c68e94b0af967f46aff845de440820f5e9a2855",
+  "readiness_level": "VERIFIED-LOCAL",
+  "owner_decisions_preserved": {
+    "A1_gate_by_gate_pause": true,
+    "A2_file_move_g4_tier2_gui_diff_same_scope_no_overwrite": true,
+    "A3_owner_ui_privacy_delete_only_never_llm_voice_mcp": true,
+    "A4_direct_local_working_tree_zero_git_mutations": true
+  },
+  "completed_work_packages": [
+    {
+      "id": "B18",
+      "title": "Standalone Windows Packaging Support (Embedded Python Discovery, Bundled Migrations/Contracts, WebView2 Mode & Offline Smoke Script)",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "apps/desktop/src-tauri/src/core_launcher.rs",
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "core/jarvis/infrastructure/dual_db.py",
+        "core/jarvis/application/config_service.py",
+        "scripts/build_standalone_windows.ps1"
+      ],
+      "highlights": [
+        "core_launcher.rs prefers bundled embedded Python (resources/python/python.exe) before dev .venv and propagates JARVIS_MIGRATIONS_DIR and JARVIS_CONTRACTS_DIR automatically.",
+        "tauri.conf.json bumped to v0.2.2 with currentUser NSIS non-admin mode and WebView2 downloadBootstrapper configuration.",
+        "scripts/build_standalone_windows.ps1 stages core/jarvis, migrations, contracts, LICENSE, THIRD-PARTY-NOTICES.txt and passed ephemeral offline smoke check (B18_STANDALONE_SMOKE_PASS)."
+      ]
+    },
+    {
+      "id": "B19",
+      "title": "Cross-Machine Portable Recovery DEK Backup, Transactional SQL Migrations & R2 Quiesced Online-Backup Storage Migration",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/infrastructure/migrations.py",
+        "core/jarvis/infrastructure/dual_db.py",
+        "core/jarvis/application/backup_service.py",
+        "core/jarvis/application/storage_service.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "highlights": [
+        "Replaced implicit-committing sqlite3.executescript() with atomic BEGIN IMMEDIATE ... COMMIT / ROLLBACK SQL statement execution verified by rollback test.",
+        "BackupService wraps jarvis.memory.master_dek.v1 inside the Argon2id + AES-256-GCM archive and re-encrypts restored is_encrypted=1 memories onto a target machine's new DEK while replaying deletion_ledger tombstones (U-D02).",
+        "StorageService uses SQLite Online Backup API (snapshot_core/snapshot_knowledge) for live WAL DB migrations and never deletes source data; wired POST /v1/storage/migrate/propose + /apply with single-use GUI R2 approval while keeping direct unapproved POST /v1/storage/migrate blocked (503)."
+      ]
+    },
+    {
+      "id": "B20",
+      "title": "Fix Private LAN capabilities_json HTTP 500, RFC1918 Private-Host Guard, Registry GPU VRAM Discovery & DynamicResourceGovernor",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/domain/ai_models.py",
+        "core/jarvis/application/ecosystem_service.py",
+        "core/jarvis/application/ai_registry_service.py",
+        "core/jarvis/domain/recommendations.py",
+        "core/jarvis/platform/windows/hardware.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "highlights": [
+        "Fixed DEF-35 / IR-18 schema mismatch so registering a Private LAN provider writes valid ProviderCapabilityFlags and GET /v1/providers returns 200 (zero 500 crash).",
+        "Blocked public internet hosts from registering as authorized_lan (strict RFC1918/ULA/loopback/.local host verification).",
+        "Added pure-domain DynamicResourceGovernor (idle VRAM unload TTL, battery saver/gaming throttling, unhealthy LLM auto-fallback to Direct Mode) exposed via GET /v1/system/governor.",
+        "Added read-only Windows Registry 64-bit HardwareInformation.qwMemorySize lookup for AMD/Intel GPUs (verified live on host: Intel UHD Graphics 128 MiB + NVIDIA RTX 3050 4096 MiB)."
+      ]
+    },
+    {
+      "id": "B21",
+      "title": "Imperative 0-setState OrbitalCore, Structured Unified Diff ApprovalDialog, Interaction-First HUD & WCAG 2.2 AA",
+      "status": "VERIFIED_UNIT",
+      "files": [
+        "apps/desktop/src/components/OrbitalCore.tsx",
+        "apps/desktop/src/components/ApprovalDialog.tsx",
+        "apps/desktop/src/components/OnboardingWizard.tsx",
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/__tests__/g5_hud_a11y.test.tsx"
+      ],
+      "highlights": [
+        "Removed React setAngleDeg inside requestAnimationFrame in OrbitalCore.tsx; uses direct SVG DOM ref transforms with verified ZERO React re-renders per animation frame.",
+        "Added structured line-by-line unified diff renderer with non-color-only screen-reader prefixes and expiry role='alert' inside native <dialog> ApprovalDialog.",
+        "Added aria-label on progressbar, aria-pressed on toggle buttons, and polite status region in OnboardingWizard; collapsed raw engine internals into native <details> disclosure in Command Center.",
+        "Verified 5 core theme color pairings via WCAG 2.2 AA contrast checker (6.72:1 to 15.45:1, all PASS)."
+      ]
+    },
+    {
+      "id": "B24",
+      "title": "Accurate Transitive SBOM, Honest OneCore/PyAV License Disclosures & Root Legal/Security Docs",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/jarvis/domain/licensing.py",
+        "core/jarvis/application/license_service.py",
+        "LICENSE",
+        "SECURITY.md",
+        "THIRD-PARTY-NOTICES.txt"
+      ],
+      "highlights": [
+        "Audited installed .venv metadata and updated LicenseInventoryService with accurate versions/SPDX, zero Unknown licenses, explicit Proprietary-Windows-OS classification for Windows OneCore voices, and transparent GPL-3.0-or-later disclosure for optional [voice] PyAV/FFmpeg & [tts-piper] piper-tts extras.",
+        "Created root LICENSE, SECURITY.md, and THIRD-PARTY-NOTICES.txt aligned with /v1/licenses/sbom and /v1/licenses/notices."
+      ]
+    }
+  ],
+  "verification_results": {
+    "pytest": {
+      "status": "PASS",
+      "passed": 177,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 27.06
+    },
+    "ruff": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "mypy": {
+      "status": "PASS",
+      "files_checked": 73,
+      "errors": 0
+    },
+    "cargo_test": {
+      "status": "PASS",
+      "passed": 9,
+      "failed": 0
+    },
+    "frontend_tsc": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "frontend_vitest": {
+      "status": "PASS",
+      "test_files": 7,
+      "passed": 23,
+      "failed": 0
+    },
+    "b18_standalone_staging_smoke": {
+      "status": "PASS",
+      "result": "B18_STANDALONE_SMOKE_PASS"
+    },
+    "live_windows_hardware_probe": {
+      "status": "PASS",
+      "result": "HW_PROBE_OK ram_gb=39.7 gpus=[('nvidia', 'NVIDIA GeForce RTX 3050 Laptop GPU', 4096), ('intel', 'Intel(R) UHD Graphics', 128)] power=ac"
+    },
+    "wcag_contrast_checks": {
+      "status": "PASS",
+      "ratios": {
+        "primary_text_on_panel": "15.45:1",
+        "accent_core_on_panel": "11.26:1",
+        "status_ok_on_panel": "11.93:1",
+        "status_danger_on_panel": "6.72:1",
+        "dark_ink_on_warn_cta": "11.87:1"
+      }
+    },
+    "shadow_gate": {
+      "status": "PASS",
+      "checked_files_count": 81,
+      "blocking_violations_count": 0,
+      "warnings_count": 0,
+      "recommended_max_readiness": "VERIFIED-LOCAL"
+    }
+  },
+  "untested_surfaces": [
+    "Clean-VM installation and execution of a compiled NSIS .exe installer bundling a real Windows embeddable Python zip + Tauri release binary (VERIFIED_INSTALLED_E2E requires downloading embeddable Python and running tauri build + clean Windows VM test).",
+    "Live end-to-end Private LAN HTTPS inference against a separate physical LAN GPU host with self-signed TLS cert pinning.",
+    "Real desktop browser visual screenshot / Playwright E2E walkthrough across 1024x768 and 1440x900 viewports.",
+    "Stage G6/G7 optional tracks not yet started: B22 (Offline Bilingual Eval Harness), B23 (Hardened Opt-In MCP Host), B25 (Evidence-gated model adaptation), B26 (Optional Ecosystem Packs)."
+  ],
+  "next_gate_awaiting_approval": {
+    "stage": "G6",
+    "work_packages": [
+      "B22: Reproducible Offline Bilingual Evaluation Harness (13 metrics, Wilson CIs, held-out test)",
+      "B23: Hardened Opt-In MCP Host (read-only pilot, schema SHA-256 rug-pull pinning, Win32 Job Object isolation, BR-15 tainting, MCP Manager UI + Kill Switch)",
+      "B25: Evidence-gated model adaptation review (strictly gated on B22 held-out scorecard; no unapproved training)"
+    ]
+  }
+}

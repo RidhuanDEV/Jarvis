@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph Transport["transport/"]
+        App["app.py (96 routes)"]
+        RemoteDead["remote_gateway_app.py (UNWIRED DEAD SERVER)"]
+        Settings["settings.py (CoreStartupSettings)"]
+    end
+
+    subgraph AppLayer["application/ (20 Services)"]
+        Turn["TurnOrchestratorService (RAM 12-msg history, NO memory recall)"]
+        PolicyWrap["ApprovalService + PolicyEngine (domain)"]
+        AIReg["AiRegistryService"]
+        VoiceSvc["VoicePipelineService (DISCONNECTED from LiveVoiceEngine)"]
+        Mem["MemoryVaultService"]
+        Know["KnowledgeRagService (BM25 only, embedding=None)"]
+        Life["PersonalLifeService + ReminderSchedulerService (NO cron loop)"]
+        ScreenWeb["ScreenAwarenessService + WebIntelligenceService (search=None)"]
+        WorkEco["WorkflowEngineService (NO-OP stub) + EcosystemGovernanceService (metadata stub)"]
+        InfraSvc["ConfigService + StorageService + BackupService + LicenseInventoryService"]
+        R3Svc["Camera (port=None) + HA (client=None) + Remote + PreferenceProposal"]
+    end
+
+    subgraph InfraLayer["infrastructure/"]
+        DualDB["DualSqliteManager + migrations"]
+        LiveVoice["LiveVoiceEngine (sounddevice/OWW/Silero/Whisper/Piper)"]
+        LlmMgr["LocalLlmRuntimeManager + LlamaCppServerAdapter"]
+        OllamaDead["OllamaAdapter (DEAD CODE)"]
+        Bus["SequencedEventBus (SSE unwired to UI)"]
+        WebFetch["SafeWebFetchClient (SSRF DNS TOCTOU)"]
+    end
+
+    subgraph PlatformLayer["platform/windows/"]
+        WinAdapters["Hardware, Audio (WinMM), Desktop (allow_live_launch=False), FS, Screen (title only), Vault, Supervisor"]
+        FakeNotif["FakeNotificationAdapter (in production!)"]
+    end
+
+    App --> Turn & PolicyWrap & AIReg & VoiceSvc & Mem & Know & Life & ScreenWeb & WorkEco & InfraSvc & R3Svc
+    App --> LiveVoice & LlmMgr & Bus
+    Turn --> PolicyWrap & AIReg & Mem & Know & Life & ScreenWeb
+    Turn --> WinAdapters
+    LlmMgr --> AIReg
+    AppLayer --> DualDB & WebFetch & WinAdapters & FakeNotif

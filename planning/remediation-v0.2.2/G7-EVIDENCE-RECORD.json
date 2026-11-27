@@ -1,0 +1,125 @@
+{
+  "gate_id": "G7",
+  "stage_name": "Optional Full Ecosystem Capability Packs — Web Search, Verified Camera, Private-LAN Home Assistant, Read-Only OAuth PKCE & TLS/Argon2id Remote Gateway (B26)",
+  "generated_at_utc": "2026-11-27T11:56:00Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "git_diff_bytes": 584890,
+  "git_diff_sha256": "f4f27b102a8dd53d9f4e1a4b19024e34ff4fed947a0357e7b851685da848f0fa",
+  "readiness_level": "VERIFIED-LOCAL",
+  "owner_decisions_preserved": {
+    "A1_gate_by_gate_pause": true,
+    "A2_file_move_g4_tier2_gui_diff_same_scope_no_overwrite": true,
+    "A3_owner_ui_privacy_delete_only_never_llm_voice_mcp": true,
+    "A4_direct_local_working_tree_zero_git_mutations": true
+  },
+  "completed_work_packages": [
+    {
+      "id": "B26",
+      "title": "Optional Full Ecosystem Capability Packs with Per-Connector Consent, Threat Guards & Offline Degradation",
+      "status": "VERIFIED_INTEGRATION",
+      "files": [
+        "core/migrations/core/0004_ecosystem_connectors.sql",
+        "core/jarvis/domain/oauth_pkce.py",
+        "core/jarvis/domain/iot_and_remote.py",
+        "core/jarvis/infrastructure/crypto.py",
+        "core/jarvis/infrastructure/remote_tls.py",
+        "core/jarvis/infrastructure/web_search_provider.py",
+        "core/jarvis/infrastructure/home_assistant_client.py",
+        "core/jarvis/platform/windows/camera.py",
+        "core/jarvis/application/web_search_service.py",
+        "core/jarvis/application/home_assistant_service.py",
+        "core/jarvis/application/oauth_connector_service.py",
+        "core/jarvis/application/remote_gateway_service.py",
+        "core/jarvis/transport/remote_gateway_app.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src/lib/contracts.ts",
+        "apps/desktop/src/components/EcosystemPanels.tsx",
+        "apps/desktop/src/App.tsx",
+        "tests/integration/test_g7_ecosystem_packs.py",
+        "apps/desktop/src/__tests__/g7_ecosystem_connectors.test.tsx"
+      ],
+      "highlights": [
+        "WebSearchProviderPort (`SearxngWebSearchProvider`): per-connector consent persisted in `ecosystem_connector`, upfront DNS anti-SSRF + redirect refusal + streaming byte cap, private PII query guard, pre/post-unescape HTML & boundary-tag sanitization (`[ESCAPED_TAG]`), `BR-15` session tainting, and labeled stale cache offline degradation.",
+        "Home Assistant Private-LAN Client (`PrivateLanHomeAssistantClient`): enforces private LAN/RFC1918/loopback HTTPS only, OS Credential Vault token isolation (0 plaintext in SQLite), R3 safety-critical device bans, real `POST /api/services` + `GET /api/states` readback with honest `unavailable`/`unknown` outcomes and 0 blind retries.",
+        "Windows On-Demand Camera Adapter (`WindowsOnDemandCameraAdapter`): isolated in `jarvis.platform.windows` (NFR-16 kept), non-invasive PnP discovery without opening video streams, canonical `cam-<index>` validation, RAM-only bytearray capture with immediate close, and honest `UNSUPPORTED` refusal without synthetic dummy frames.",
+        "Read-Only OAuth 2.0 PKCE Calendar/Email Connector (`FR-LIF-04`): RFC 7636 S256 PKCE, RFC 8252 loopback redirect, strict read-only scope allowlist enforced on BOTH request and token-endpoint response, single-use CSRF state nonce, vault-only token storage, deduplicated `external_read` calendar import, `BR-15` session tainting, offline cached degradation, and instant vault wipe on revoke.",
+        "TLS-Hardened Remote Mobile Gateway (`FR-REM-01..04`, `NFR-11`): real local ECDSA P-256 X.509 cert provisioning pinned to private/VPN IP SANs with SHA-256 fingerprint verification gating production activation, salted Argon2id pairing-code hashing with 5-attempt lockout, and `RemoteReplayGuard` (`X-Jarvis-Nonce` + `X-Jarvis-Timestamp` +-60s window).",
+        "Frontend `EcosystemPanel` expanded with Opt-In Ecosystem Capability Packs consent/offline status & instant revocation control."
+      ]
+    }
+  ],
+  "verification_results": {
+    "pytest": {
+      "status": "PASS",
+      "passed": 186,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 34.93
+    },
+    "b26_precision_recall_probes": {
+      "status": "PASS",
+      "oauth_scope_recall_and_precision": true,
+      "ha_lan_endpoint_recall_and_precision": true
+    },
+    "ruff": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "mypy": {
+      "status": "PASS",
+      "files_checked": 83,
+      "errors": 0
+    },
+    "import_linter": {
+      "status": "PASS",
+      "files_analyzed": 150,
+      "dependencies_analyzed": 805,
+      "contracts_kept": 2,
+      "contracts_broken": 0
+    },
+    "cargo_test": {
+      "status": "PASS",
+      "passed": 9,
+      "failed": 0
+    },
+    "frontend_tsc": {
+      "status": "PASS",
+      "errors": 0
+    },
+    "frontend_vitest": {
+      "status": "PASS",
+      "test_files": 9,
+      "passed": 25,
+      "failed": 0
+    },
+    "appsec_control_verifier": {
+      "status": "PASS",
+      "passed": 7,
+      "failed": 0
+    },
+    "shadow_gate": {
+      "status": "PASS",
+      "checked_files_count": 104,
+      "blocking_violations_count": 0,
+      "warnings_count": 0,
+      "recommended_max_readiness": "VERIFIED-LOCAL"
+    }
+  },
+  "untested_surfaces": [
+    "Live third-party cloud OAuth 2.0 providers (Google/Microsoft) with real browser loopback callback and live internet connectivity (automated suite uses deterministic httpx.MockTransport + injected DNS resolver).",
+    "Live physical webcam frame capture via optional opencv-python-headless on physical camera hardware.",
+    "Live Home Assistant LAN server over physical network TLS with real smart-home devices.",
+    "Live mobile companion TLS handshake over physical Tailscale/WireGuard VPN against running uvicorn TLS listener.",
+    "Remaining hardware/release-gate surfaces inherited from G0-G6: real human spoken audio WER corpus across noisy rooms, live multi-step GGUF GPU soak/latency under VRAM pressure, clean Windows VM installer smoke, and 8-hour soak test (NFR-12)."
+  ],
+  "roadmap_completion": {
+    "source_plan": "docs/JARVIS-INDEPENDENT-REVIEW-AND-ENHANCEMENT-PLAN.md",
+    "completed_gates": ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7"],
+    "completed_backlog_ids": [
+      "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09", "B10",
+      "B11", "B12", "B13", "B14", "B15", "B16", "B17", "B18", "B19", "B20",
+      "B21", "B22", "B23", "B24", "B25", "B26"
+    ],
+    "git_commit_or_push_performed": false
+  }
+}

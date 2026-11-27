@@ -75,6 +75,7 @@ export interface JarvisStoreState {
   onboardingCompleted: boolean
   timezoneIana: string
   lastTurnReply: string
+  lastTurnReplyAt: number
   frameTelemetry: FrameTelemetrySnapshot
   eventLog: ReadonlyArray<SequencedDomainEvent>
 
@@ -90,15 +91,24 @@ export interface JarvisStoreState {
   openApprovalChallenge: (challenge: ApprovalChallenge) => void
   resolvePendingApproval: (decision: 'approve' | 'reject' | 'expired') => void
   applySequencedEvent: (event: SequencedDomainEvent) => boolean
+  hydratePersistedData: (data: {
+    readonly memories?: ReadonlyArray<MemoryItem>
+    readonly reminders?: ReadonlyArray<ReminderItem>
+    readonly tasks?: ReadonlyArray<TaskItem>
+    readonly knowledgeRoots?: ReadonlyArray<KnowledgeRootItem>
+    readonly expenseSummaries?: ReadonlyArray<CurrencyExpenseSummary>
+  }) => void
   setCapabilities: (data: HardwareCapabilitiesResponse) => void
   setStorageLocations: (locations: ReadonlyArray<StorageLocation>) => void
   setLicenses: (artifacts: ReadonlyArray<LicenseArtifact>) => void
   addMemory: (item: MemoryItem) => void
+  replaceMemoryId: (tempId: string, persisted: MemoryItem) => void
   approveMemoryProposal: (id: string) => void
   removeMemory: (id: string) => void
   addReminder: (item: ReminderItem) => void
   dismissReminder: (id: string) => void
   addKnowledgeRoot: (canonicalPath: string) => void
+  replaceKnowledgeRootId: (tempId: string, persisted: KnowledgeRootItem) => void
   revokeKnowledgeRoot: (id: string) => void
   addTask: (title: string) => void
   toggleTaskDone: (id: string) => void
@@ -188,6 +198,7 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
   onboardingCompleted: false,
   timezoneIana: 'UTC',
   lastTurnReply: '',
+  lastTurnReplyAt: 0,
   frameTelemetry: INITIAL_TELEMETRY,
   eventLog: [],
 
@@ -348,6 +359,15 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
     return true
   },
 
+  hydratePersistedData: (data) =>
+    set((s) => ({
+      memories: data.memories ?? s.memories,
+      reminders: data.reminders ?? s.reminders,
+      tasks: data.tasks ?? s.tasks,
+      knowledgeRoots: data.knowledgeRoots ?? s.knowledgeRoots,
+      expenseSummaries: data.expenseSummaries ?? s.expenseSummaries,
+    })),
+
   setCapabilities: (capabilities) => {
     const primary = capabilities.snapshot.displays.find((d) => d.is_primary) ?? capabilities.snapshot.displays[0]
     set({
@@ -362,6 +382,10 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
     set((s) => ({
       memories: [item, ...s.memories],
       statusAnnouncement: `Memori '${item.kind}' disimpan secara eksplisit.`,
+    })),
+  replaceMemoryId: (tempId, persisted) =>
+    set((s) => ({
+      memories: s.memories.map((m) => (m.id === tempId ? persisted : m)),
     })),
   approveMemoryProposal: (id) =>
     set((s) => ({
@@ -394,6 +418,10 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
         { id: `root-${Date.now()}`, canonical_path: canonicalPath, enabled: true, revision: 1 },
       ],
       statusAnnouncement: `Folder pengetahuan opt-in ditambahkan: ${canonicalPath}.`,
+    })),
+  replaceKnowledgeRootId: (tempId, persisted) =>
+    set((s) => ({
+      knowledgeRoots: s.knowledgeRoots.map((r) => (r.id === tempId ? persisted : r)),
     })),
   revokeKnowledgeRoot: (id) =>
     set((s) => ({
@@ -553,6 +581,7 @@ export const useJarvisStore = create<JarvisStoreState>((set, get) => ({
   setLastTurnReply: (reply, state) =>
     set((s) => ({
       lastTurnReply: reply,
+      lastTurnReplyAt: Date.now(),
       machineState: state ?? s.machineState,
       statusAnnouncement: reply,
     })),

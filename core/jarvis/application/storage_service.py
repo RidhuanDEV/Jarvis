@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,26 @@ from jarvis.domain.models import (
 )
 from jarvis.domain.ports import ClockPort, FilesystemSafetyPort
 from jarvis.infrastructure.dual_db import DualSqliteManager
+
+CACHE_OWNERSHIP_SENTINEL = ".jarvis-cache-owned"
+
+_FORBIDDEN_STORAGE_SEGMENTS: frozenset[str] = frozenset(
+    {
+        "windows",
+        "system32",
+        "syswow64",
+        "programdata",
+        "program files",
+        "program files (x86)",
+        "$recycle.bin",
+        "system volume information",
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".azure",
+        ".kube",
+    }
+)
 
 
 class StorageServiceError(ValueError):
@@ -70,6 +91,59 @@ class StorageService:
         self._fs = fs_port
         self._clock = clock
 
+    def _has_forbidden_segment(self, path: Path) -> bool:
+        return any(part.lower() in _FORBIDDEN_STORAGE_SEGMENTS for part in path.parts)
+
+    def _has_valid_cache_sentinel(self, root_dir: Path, expected_category: StorageCategory) -> bool:
+        sentinel = root_dir / CACHE_OWNERSHIP_SENTINEL
+        if not sentinel.exists() or sentinel.is_symlink():
+            return False
+        if self._fs.inspect_path(str(sentinel)).is_reparse_point:
+            return False
+        try:
+            payload = json.loads(sentinel.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("owner") == "jarvis"
+            and payload.get("category") == expected_category.value
+        )
+
+    def _ensure_owned_cache_sentinel(self, root_dir: Path, category: StorageCategory) -> None:
+        """Stamp ownership sentinel ONLY on freshly created or empty directories (never user folders)."""
+        if self._fs.inspect_path(str(root_dir)).is_reparse_point or root_dir.is_symlink():
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Refusing to adopt reparse point/symlink as cache root: '{root_dir}'.",
+            )
+        if root_dir.exists():
+            if self._has_valid_cache_sentinel(root_dir, category):
+                return
+            try:
+                existing_entries = list(root_dir.iterdir())
+            except OSError as exc:
+                raise StorageServiceError(ErrorCode.DENIED, f"Cannot inspect directory '{root_dir}': {exc}") from exc
+            if existing_entries:
+                raise StorageServiceError(
+                    ErrorCode.DENIED,
+                    f"Refusing to assign evictable '{category.value}' root to non-empty directory without JARVIS ownership sentinel.",
+                )
+        else:
+            root_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = root_dir / CACHE_OWNERSHIP_SENTINEL
+        sentinel.write_text(
+            json.dumps(
+                {
+                    "owner": "jarvis",
+                    "category": category.value,
+                    "created_at": self._clock.now_utc().isoformat(),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
     def sync_locations_from_config(self) -> list[StorageLocationRecord]:
         """Materialize all 11 configured storage roots into storage_location table."""
         active = self._config.get_active().document
@@ -81,6 +155,13 @@ class StorageService:
         with self._db.core_tx() as conn:
             for category, raw_path in cat_map.items():
                 inspection = self._fs.inspect_path(raw_path)
+                if category in EVICTABLE_CACHE_CATEGORIES and inspection.writable and not inspection.is_reparse_point:
+                    cand_dir = Path(inspection.canonical_path)
+                    # Only stamp sentinel on newly created or empty default cache/temp directories
+                    if not self._has_forbidden_segment(cand_dir) and (
+                        not cand_dir.exists() or not any(cand_dir.iterdir())
+                    ):
+                        self._ensure_owned_cache_sentinel(cand_dir, category)
                 quota = active.storage.cache_quota_bytes if category == StorageCategory.CACHE else None
                 status = "healthy"
                 if category in WAL_DATABASE_CATEGORIES:
@@ -174,11 +255,24 @@ class StorageService:
                 )
 
         inspection = self._fs.inspect_path(new_path)
+        if inspection.is_reparse_point:
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Target path '{inspection.canonical_path}' is a reparse point/symlink and cannot be registered.",
+            )
+        if self._has_forbidden_segment(Path(inspection.canonical_path)):
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Target path '{inspection.canonical_path}' lies inside a protected OS or credential directory.",
+            )
         if not inspection.writable:
             raise StorageServiceError(
                 ErrorCode.DENIED,
                 f"Target path '{inspection.canonical_path}' is not writable.",
             )
+        if category in EVICTABLE_CACHE_CATEGORIES:
+            # IR-01 / B03: prevent 2-step user-file deletion by refusing non-empty user directories as cache/temp
+            self._ensure_owned_cache_sentinel(Path(inspection.canonical_path), category)
 
         active_doc = self._config.get_active().document
         updated_roots = active_doc.storage.roots.model_copy(update={category.value: inspection.canonical_path})
@@ -255,6 +349,16 @@ class StorageService:
         active_doc = self._config.get_active().document
         source_dir = Path(active_doc.storage.roots.as_category_map()[category])
         inspection = self._fs.inspect_path(target_path)
+        if inspection.is_reparse_point:
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Target path '{inspection.canonical_path}' is a reparse point/symlink and cannot be a migration target.",
+            )
+        if self._has_forbidden_segment(Path(inspection.canonical_path)):
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Target path '{inspection.canonical_path}' lies inside a protected OS or credential directory.",
+            )
         if not inspection.writable:
             raise StorageServiceError(ErrorCode.DENIED, f"Target path not writable: {target_path}")
 
@@ -269,12 +373,15 @@ class StorageService:
                 rolled_back=False,
             )
 
-        # Preflight disk space check
+        # Preflight disk space check (exclude live WAL/SHM sidecars when using Online Backup API!)
+        is_wal_db = category in WAL_DATABASE_CATEGORIES
         source_files: list[Path] = []
         total_bytes = 0
         if source_dir.exists():
             for item in source_dir.rglob("*"):
-                if item.is_file():
+                if item.is_file() and not item.is_symlink():
+                    if is_wal_db and item.name.endswith((".db-wal", ".db-shm")):
+                        continue
                     source_files.append(item)
                     total_bytes += item.stat().st_size
 
@@ -288,17 +395,31 @@ class StorageService:
         try:
             staging_dir.mkdir(parents=True, exist_ok=True)
             verified_count = 0
-            for src_file in source_files:
-                rel = src_file.relative_to(source_dir)
-                dst_file = staging_dir / rel
-                dst_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dst_file)
-                if _sha256_file(src_file) != _sha256_file(dst_file):
-                    raise StorageServiceError(
-                        ErrorCode.INTERNAL,
-                        f"Checksum verification failed during migration for '{rel}'.",
-                    )
-                verified_count += 1
+            if category == StorageCategory.CORE_DB:
+                # B19 / DEF-14: quiesced SQLite Online Backup API snapshot (never raw shutil.copy2 on live WAL DB!)
+                snap_dst = staging_dir / self._db.core_db_path.name
+                self._db.snapshot_core(snap_dst)
+                total_bytes = snap_dst.stat().st_size
+                verified_count = 1
+            elif category == StorageCategory.KNOWLEDGE_DB:
+                snap_dst = staging_dir / self._db.knowledge_db_path.name
+                self._db.snapshot_knowledge(snap_dst)
+                total_bytes = snap_dst.stat().st_size
+                verified_count = 1
+            else:
+                for src_file in source_files:
+                    if self._fs.inspect_path(str(src_file)).is_reparse_point:
+                        continue
+                    rel = src_file.relative_to(source_dir)
+                    dst_file = staging_dir / rel
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                    if _sha256_file(src_file) != _sha256_file(dst_file):
+                        raise StorageServiceError(
+                            ErrorCode.INTERNAL,
+                            f"Checksum verification failed during migration for '{rel}'.",
+                        )
+                    verified_count += 1
 
             if simulate_failure_before_commit:
                 raise RuntimeError("Simulated mid-migration interruption before pointer commit.")
@@ -356,11 +477,51 @@ class StorageService:
         if not root_dir.exists():
             return CacheCleanupResult(category=category, deleted_files=0, freed_bytes=0, remaining_bytes=0)
 
+        # IR-01 / B03: ownership sentinel + anti-reparse boundary prevents deleting any non-JARVIS user directory
+        if self._fs.inspect_path(str(root_dir)).is_reparse_point or root_dir.is_symlink():
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Cache cleanup refused: '{category.value}' root is a reparse point or symlink.",
+            )
+        if self._has_forbidden_segment(root_dir):
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Cache cleanup refused: '{category.value}' root points inside a protected directory.",
+            )
+        if not self._has_valid_cache_sentinel(root_dir, category):
+            raise StorageServiceError(
+                ErrorCode.DENIED,
+                f"Cache cleanup refused: '{category.value}' directory lacks verified JARVIS ownership sentinel.",
+            )
+
+        root_resolved = root_dir.resolve(strict=True)
         files: list[tuple[float, int, Path]] = []
         total_size = 0
-        for item in root_dir.rglob("*"):
-            if item.is_file():
-                st = item.stat()
+        for dirpath, dirnames, filenames in os.walk(root_resolved, topdown=True, followlinks=False):
+            current_dir = Path(dirpath)
+            # Prune symlinks and Windows junctions before descending
+            safe_subdirs: list[str] = []
+            for dname in dirnames:
+                sub = current_dir / dname
+                if sub.is_symlink() or self._fs.inspect_path(str(sub)).is_reparse_point:
+                    continue
+                if sub.resolve(strict=False).is_relative_to(root_resolved):
+                    safe_subdirs.append(dname)
+            dirnames[:] = safe_subdirs
+
+            for fname in filenames:
+                if current_dir == root_resolved and fname == CACHE_OWNERSHIP_SENTINEL:
+                    continue
+                item = current_dir / fname
+                if item.is_symlink() or self._fs.inspect_path(str(item)).is_reparse_point:
+                    continue
+                resolved_item = item.resolve(strict=False)
+                if not resolved_item.is_relative_to(root_resolved):
+                    continue
+                try:
+                    st = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
                 total_size += st.st_size
                 files.append((st.st_mtime, st.st_size, item))
 
@@ -372,6 +533,8 @@ class StorageService:
         for _mtime, size, path in files:
             if remaining <= max_bytes:
                 break
+            if path.is_symlink() or self._fs.inspect_path(str(path)).is_reparse_point:
+                continue
             path.unlink(missing_ok=True)
             deleted_files += 1
             freed_bytes += size

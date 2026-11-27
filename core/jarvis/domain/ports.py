@@ -9,8 +9,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
+from jarvis.domain.app_catalog import AppLaunchReceipt, ApplicationCatalogEntry
 from jarvis.domain.models import (
     AudioEndpointInfo,
     HardwareSnapshot,
@@ -83,13 +84,114 @@ class SecretVaultAndCryptoPort(Protocol):
 
 
 class DesktopAutomationPort(Protocol):
-    """Port 4: Allowlisted non-shell desktop automation (Phase 3+ execution adapters)."""
+    """Port 4: Allowlisted non-shell desktop automation (Phase 3+ & Stage G2 execution adapters)."""
 
     def launch_allowlisted_app(self, app_id: str) -> bool: ...
+
+    def launch_catalog_entry(self, entry: ApplicationCatalogEntry) -> AppLaunchReceipt: ...
 
     def get_volume_percent(self) -> int: ...
 
     def set_volume_percent(self, percent: int) -> int: ...
+
+
+class ApplicationCatalogPort(Protocol):
+    """Dynamic OS installed application discovery port (B09, DEC-032)."""
+
+    def list_apps(self) -> tuple[ApplicationCatalogEntry, ...]: ...
+
+    def refresh(self) -> tuple[ApplicationCatalogEntry, ...]: ...
+
+    def find_by_id(self, app_id: str) -> ApplicationCatalogEntry | None: ...
+
+
+SAFE_DOCUMENT_OPEN_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".txt",
+        ".md",
+        ".csv",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".log",
+        ".rtf",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".svg",
+        ".bmp",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".mp4",
+        ".mkv",
+        ".webm",
+    }
+)
+
+PROHIBITED_OPEN_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".exe",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".psm1",
+        ".vbs",
+        ".vbe",
+        ".js",
+        ".jse",
+        ".hta",
+        ".msi",
+        ".msp",
+        ".scr",
+        ".lnk",
+        ".reg",
+        ".jar",
+        ".com",
+        ".pif",
+        ".dll",
+        ".sys",
+        ".docm",
+        ".xlsm",
+        ".pptm",
+        ".wsf",
+        ".wsh",
+        ".cpl",
+    }
+)
+
+
+def is_safe_document_open_extension(ext: str) -> bool:
+    """Return True strictly for non-executable ordinary document/media extensions (B10)."""
+    norm = ext.strip().lower()
+    if norm and not norm.startswith("."):
+        norm = f".{norm}"
+    if norm in PROHIBITED_OPEN_EXTENSIONS:
+        return False
+    return norm in SAFE_DOCUMENT_OPEN_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class FileOpenReceipt:
+    opened: bool
+    canonical_path: str
+    verification_kind: Literal["os_registered_open", "disabled", "prohibited", "not_found", "failed"]
+    detail: str
+
+
+class FileOpenerPort(Protocol):
+    """Safe non-elevated registered document opener port (B10, DEC-032)."""
+
+    def open_registered_file(self, canonical_path: str, *, authorized_root: str) -> FileOpenReceipt: ...
 
 
 class AudioDevicePort(Protocol):

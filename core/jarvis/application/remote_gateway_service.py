@@ -17,21 +17,30 @@ import json
 import secrets
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
 
 from jarvis.domain.iot_and_remote import (
     REMOTE_ALLOWED_SCOPES,
+    RemoteReplayGuard,
     SlidingWindowRateLimiter,
     is_remote_action_permitted,
     validate_private_gateway_bind_address,
 )
 from jarvis.domain.models import ErrorCode, StrictModel
 from jarvis.domain.ports import ClockPort
+from jarvis.infrastructure.crypto import hash_pairing_code_argon2id, verify_pairing_code_argon2id
 from jarvis.infrastructure.dual_db import DualSqliteManager
+from jarvis.infrastructure.remote_tls import (
+    ProvisionedTlsMaterial,
+    provision_local_remote_tls_cert,
+    verify_provisioned_tls_material,
+)
 
 PAIRING_TTL_SECONDS = 120
+PAIRING_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_TOKEN_TTL_HOURS = 24
 MAX_TOKEN_TTL_HOURS = 168
 
@@ -91,12 +100,70 @@ def _sha256_hex(raw: str) -> str:
 class RemoteGatewayService:
     """Manages private remote mobile gateway configuration, local pairing, rate limiting, and revocation."""
 
-    def __init__(self, db: DualSqliteManager, clock: ClockPort) -> None:
+    def __init__(
+        self,
+        db: DualSqliteManager,
+        clock: ClockPort,
+        *,
+        tls_dir: Path | None = None,
+    ) -> None:
         self._db = db
         self._clock = clock
+        self._tls_dir = tls_dir
         self._limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=60.0)
+        self._replay_guard = RemoteReplayGuard(max_skew_seconds=60.0)
+        self._pairing_failed_attempts: dict[str, int] = {}
         self._os_locked = False
         self._ensure_default_config()
+
+    def provision_tls_certificate(
+        self,
+        *,
+        bind_address: str,
+        validity_days: int = 365,
+        correlation_id: str,
+    ) -> ProvisionedTlsMaterial:
+        """Provision a local self-signed ECDSA P-256 TLS cert pinned to a private/VPN bind IP (Stage G7, FR-REM-01)."""
+        if self._tls_dir is None:
+            raise RemoteGatewayError(
+                ErrorCode.UNSUPPORTED,
+                "Remote gateway TLS storage directory is not configured.",
+                http_status=503,
+            )
+        try:
+            mat = provision_local_remote_tls_cert(
+                self._tls_dir,
+                bind_address=bind_address,
+                now_utc=self._clock.now_utc(),
+                validity_days=validity_days,
+            )
+        except ValueError as exc:
+            raise RemoteGatewayError(ErrorCode.DENIED, str(exc), http_status=403) from exc
+
+        with self._db.core_tx() as conn:
+            self._write_audit(
+                conn,
+                correlation_id=correlation_id,
+                actor="local_owner",
+                event_type="remote_gateway.tls_provisioned",
+                outcome="completed",
+                meta={
+                    "bind_address": mat.bind_address,
+                    "fingerprint_sha256": mat.fingerprint_sha256,
+                    "not_after_utc": mat.not_after_utc.isoformat(),
+                },
+                now_iso=self._clock.now_utc().isoformat(),
+            )
+        return mat
+
+    def verify_provisioned_tls(self, expected_fingerprint_sha256: str) -> tuple[bool, str]:
+        if self._tls_dir is None:
+            return (False, "Remote gateway TLS directory is not configured.")
+        return verify_provisioned_tls_material(
+            self._tls_dir,
+            expected_fingerprint_sha256=expected_fingerprint_sha256,
+            now_utc=self._clock.now_utc(),
+        )
 
     def _ensure_default_config(self) -> None:
         now_iso = self._clock.now_utc().isoformat()
@@ -246,7 +313,7 @@ class RemoteGatewayService:
                     challenge_id,
                     clean_label,
                     clean_fp,
-                    _sha256_hex(pairing_code),
+                    hash_pairing_code_argon2id(pairing_code),
                     expires.isoformat(),
                     now.isoformat(),
                 ),
@@ -314,9 +381,37 @@ class RemoteGatewayService:
                 conn.execute("UPDATE remote_pairing_challenge SET state = 'expired' WHERE id = ?", (challenge_id,))
             raise RemoteGatewayError(ErrorCode.APPROVAL_EXPIRED, "Pairing challenge expired.")
 
-        presented_hash = _sha256_hex(pairing_code.strip())
-        if not hmac.compare_digest(str(row["code_hash"]), presented_hash):
-            raise RemoteGatewayError(ErrorCode.DENIED, "Invalid local pairing challenge code.")
+        stored_hash = str(row["code_hash"])
+        if stored_hash.startswith("argon2id$"):
+            code_ok = verify_pairing_code_argon2id(stored_hash, pairing_code.strip())
+        else:
+            # Backward-compatible verification for pre-G7 pending challenge rows only
+            code_ok = hmac.compare_digest(stored_hash, _sha256_hex(pairing_code.strip()))
+        if not code_ok:
+            attempts = self._pairing_failed_attempts.get(challenge_id, 0) + 1
+            self._pairing_failed_attempts[challenge_id] = attempts
+            if attempts >= PAIRING_MAX_FAILED_ATTEMPTS:
+                with self._db.core_tx() as conn:
+                    conn.execute(
+                        "UPDATE remote_pairing_challenge SET state = 'rejected' WHERE id = ?",
+                        (challenge_id,),
+                    )
+                    self._write_audit(
+                        conn,
+                        correlation_id=correlation_id,
+                        actor="local_owner",
+                        event_type="remote_gateway.pairing_locked_out",
+                        outcome="denied",
+                        meta={"challenge_id": challenge_id, "attempts": attempts},
+                        now_iso=now_iso,
+                    )
+                raise RemoteGatewayError(
+                    ErrorCode.DENIED,
+                    f"Pairing challenge locked after {PAIRING_MAX_FAILED_ATTEMPTS} invalid attempts.",
+                    http_status=403,
+                )
+            raise RemoteGatewayError(ErrorCode.DENIED, "Invalid local pairing challenge code.", http_status=403)
+        self._pairing_failed_attempts.pop(challenge_id, None)
 
         device_id = f"dev_{uuid.uuid4().hex[:16]}"
         token_id = f"rtok_{uuid.uuid4().hex[:16]}"
@@ -411,6 +506,7 @@ class RemoteGatewayService:
                 now_iso=now_iso,
             )
         self._limiter.reset_key(device_id)
+        self._replay_guard.clear_device(device_id)
         return True
 
     def list_devices(self) -> list[PairedDeviceView]:
@@ -446,9 +542,12 @@ class RemoteGatewayService:
         bearer_token: str,
         scope_requested: str,
         is_mutating: bool = False,
+        replay_nonce: str | None = None,
+        replay_timestamp_epoch: float | None = None,
+        require_replay_headers: bool = False,
         correlation_id: str,
     ) -> AuthorizedRemoteContext:
-        """Enforce gateway availability, token validity/revocation, rate limits, and FR-REM-02 scope ceiling."""
+        """Enforce gateway availability, token validity/revocation, replay protection, rate limits, and FR-REM-02 scope ceiling."""
         cfg = self.get_config()
         if not cfg.enabled:
             raise RemoteGatewayError(
@@ -498,6 +597,35 @@ class RemoteGatewayService:
             raise RemoteGatewayError(ErrorCode.DENIED, "Remote device token expired.", http_status=401)
 
         device_id = str(row["device_id"])
+
+        # Stage G7 (B26): Replay nonce + timestamp-skew protection (NFR-11)
+        has_replay_header = (replay_nonce is not None) or (replay_timestamp_epoch is not None)
+        if require_replay_headers or has_replay_header:
+            if replay_nonce is None or replay_timestamp_epoch is None:
+                raise RemoteGatewayError(
+                    ErrorCode.DENIED,
+                    "Both X-Jarvis-Nonce and X-Jarvis-Timestamp headers are required for replay protection.",
+                    http_status=403,
+                )
+            fresh, replay_reason = self._replay_guard.verify_and_record(
+                device_id=device_id,
+                nonce=replay_nonce,
+                timestamp_epoch_sec=replay_timestamp_epoch,
+                now_epoch_sec=now.timestamp(),
+            )
+            if not fresh:
+                with self._db.core_tx() as conn:
+                    self._write_audit(
+                        conn,
+                        correlation_id=correlation_id,
+                        actor=f"remote:{device_id}",
+                        event_type="remote_gateway.replay_rejected",
+                        outcome="denied",
+                        meta={"device_id": device_id, "reason": replay_reason},
+                        now_iso=now.isoformat(),
+                    )
+                raise RemoteGatewayError(ErrorCode.DENIED, replay_reason, http_status=409)
+
         allowed_rate, remaining = self._limiter.allow(device_id, now.timestamp())
         if not allowed_rate:
             with self._db.core_tx() as conn:

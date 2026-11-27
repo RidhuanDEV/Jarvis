@@ -110,8 +110,19 @@ export function OnboardingWizard({
         </button>
       </div>
 
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        Aktif: {STEP_TITLES[step - 1]} ({step}/10)
+      </div>
+
       {/* Step progress indicator */}
-      <div className="grid grid-cols-10 gap-1" role="progressbar" aria-valuenow={step} aria-valuemin={1} aria-valuemax={10}>
+      <div
+        className="grid grid-cols-10 gap-1"
+        role="progressbar"
+        aria-label="Progres langkah onboarding"
+        aria-valuenow={step}
+        aria-valuemin={1}
+        aria-valuemax={10}
+      >
         {STEP_TITLES.map((label, idx) => {
           const num = idx + 1
           const active = num === step
@@ -183,6 +194,7 @@ export function OnboardingWizard({
                 <button
                   key={mode}
                   type="button"
+                  aria-pressed={runtimeOwnershipMode === mode}
                   onClick={() => {
                     setSetupMode('custom')
                     onSelectRuntime(mode)
@@ -304,6 +316,7 @@ export function OnboardingWizard({
                   <button
                     key={tier}
                     type="button"
+                    aria-pressed={qualityTier === tier}
                     onClick={() => onSelectVisuals(tier, fpsTarget)}
                     className="font-mono-tabular rounded border px-3 py-1.5 transition-colors hover:bg-[#1c2c44] active:scale-[0.99]"
                     style={{
@@ -323,6 +336,7 @@ export function OnboardingWizard({
                   <button
                     key={fps}
                     type="button"
+                    aria-pressed={fpsTarget === fps}
                     onClick={() => onSelectVisuals(qualityTier, fps)}
                     className="font-mono-tabular rounded border px-3 py-1.5 transition-colors hover:bg-[#1c2c44] active:scale-[0.99]"
                     style={{

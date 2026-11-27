@@ -1,0 +1,20 @@
+flowchart TB
+    subgraph ACTUAL["AS-BUILT VOICE PIPELINE (v0.2.1 - BROKEN / DISCONNECTED)"]
+        direction LR
+        A1["OS Default Mic\n(device=None, WinMM)\nNO DSP / NO AEC"] --> A2["openWakeWord (0.50)\n+ Silero VAD\n33-frame noise-inflation bug\n+ 0.58s greeting race"]
+        A2 --> A3["faster-whisper-small\nCPU int8, language=id\nvad_filter=False\nNO confidence gate"]
+        A3 --> A4["router.py\nKeeps trailing '.'\n6-key 3-app alias map\nZero LLM tool calling"]
+        A4 --> A5["Qwen3-4B (CUDA)\nNo clock/Memory/Persona\nUnfiltered history(12)"]
+        A5 --> A6["Piper id_ID-news_tts\n7-char MD strip only\nIgnores speech_rate\nSync blocking playback"]
+        A7["PUT /v1/audio/devices\nVoicePipelineService\n(DEAD - 0 subscribers)"] -. "NEVER WIRED" .-> A1
+    end
+
+    subgraph TARGET["PROPOSED TARGET PIPELINE (UNIFIED FULL-DUPLEX)"]
+        direction LR
+        T1["WASAPI Selected Mic\n+ Polyphase Resampler\n+ HPF + RNNoise + WebRTC AEC"] --> T2["Corrected Silero VAD\n(Counts voiced frames only)\n+ Earcon Chime + Barge-In"]
+        T2 --> T3["Hardware-Adaptive Whisper\n(large-v3-turbo CUDA / small CPU)\nBilingual ID+EN + Hotwords\n+ Confidence Gate"]
+        T3 --> T4["Transcript Normalizer\n(Strip punct & polite prefix)\n+ Fast-Path + Grammar Tool LLM\n+ Grounded Context & Memory"]
+        T4 --> T5["Bilingual TTS Normalizer\n+ Pronunciation Lexicon\n+ Streaming Sentence Piper/Kokoro"]
+        T5 --> T6["Dedicated Playback Thread\nWASAPI Selected Speaker\nCancellable + AEC Ref Loop"]
+        T6 -. "AEC Reference Buffer" .-> T1
+    end

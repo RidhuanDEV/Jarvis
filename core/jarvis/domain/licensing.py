@@ -30,6 +30,7 @@ WEAK_COPYLEFT_PREFIXES: tuple[str, ...] = ("MPL-2.0", "LGPL-2.1", "LGPL-3.0")
 STRONG_COPYLEFT_PREFIXES: tuple[str, ...] = ("GPL-2.0", "GPL-3.0")
 NETWORK_COPYLEFT_PREFIXES: tuple[str, ...] = ("AGPL-3.0",)
 ATTRIBUTION_CONTENT_PREFIXES: tuple[str, ...] = ("CC-BY-",)
+OS_PROPRIETARY_ALLOWLIST: frozenset[str] = frozenset({"PROPRIETARY-WINDOWS-OS", "PROPRIETARY-MACOS-OS"})
 
 
 class LicenseValidationError(ValueError):
@@ -87,6 +88,8 @@ def derive_license_obligations(license_spdx: str, category: LicenseArtifactCateg
         obligations.extend(["attribution_notice", "include_license_text", "preserve_copyright"])
     elif _matches_prefix(normalized, ATTRIBUTION_CONTENT_PREFIXES):
         obligations.extend(["attribution_notice", "preserve_copyright"])
+    elif normalized.upper() in OS_PROPRIETARY_ALLOWLIST:
+        obligations.extend(["os_provided_component_only_not_redistributed"])
     else:
         raise LicenseValidationError(
             f"License SPDX '{normalized}' is not in the reviewed open-source compliance registry."

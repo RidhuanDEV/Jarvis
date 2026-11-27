@@ -1,0 +1,133 @@
+{
+  "schema_version": "1.0",
+  "stage": "G1",
+  "stage_name": "Safety Kernel (B02-B06)",
+  "recorded_at_utc": "2026-11-27T07:32:30Z",
+  "git_head": "455c6aa623fcdfe5f220dc3fda4ce2ae7336f3f5",
+  "post_g1_dirty_diff_bytes": 256675,
+  "post_g1_dirty_diff_sha256": "abdffe2fe01c859cb3b37366f2463be67b2e7e94e904006c5266cad91b18a96f",
+  "owner_gate_g0_decisions_applied": {
+    "A1_stage_scope": "Execute Stage G1 (B02-B06) and stop at Gate G1 for verification",
+    "A2_file_move_policy": "Disabled in G1 (ErrorCode.UNSUPPORTED); scheduled for G4 Tier-2 GUI diff + no-overwrite + same-scope",
+    "A3_owner_privacy_ui_exception": "Allowed strictly via direct owner GUI controls in Settings/Memory UI; prohibited for LLM/voice/MCP tools",
+    "A4_git_isolation": "Direct local working-tree patches; zero branch/commit/push mutations"
+  },
+  "measured_verification_summary": {
+    "pytest": {"passed": 159, "failed": 0, "duration_seconds": 17.54, "level": "VERIFIED_INTEGRATION"},
+    "vitest": {"passed": 15, "failed": 0, "files": 4, "level": "VERIFIED_UNIT"},
+    "tsc": {"exit_code": 0, "errors": 0},
+    "cargo_test": {"passed": 8, "failed": 0, "duration_seconds": 0.01, "level": "VERIFIED_UNIT"},
+    "ruff": {"exit_code": 0, "errors": 0},
+    "mypy": {"exit_code": 0, "checked_files": 64, "errors": 0},
+    "shadow_gate": {"passed": true, "blocking_violations": 0, "warnings": 0, "max_readiness": "VERIFIED-LOCAL"}
+  },
+  "work_items": [
+    {
+      "evidence_id": "EV-G1-B02",
+      "backlog_id": "B02",
+      "mapped_ids": ["IR-03", "IR-07", "DEF-02", "DEF-20", "FR-ADM-01", "FR-SCR-01", "NFR-04", "DEC-012"],
+      "changed_files": [
+        "core/jarvis/domain/policy.py",
+        "core/jarvis/application/approval_service.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src/lib/brokerClient.ts"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/security/test_g1_safety_kernel.py::test_ir03_policy_grant_scope_deduplication_and_atomic_cascade_revoke",
+        "tests/security/test_g1_safety_kernel.py::test_ir07_ir08_transport_host_ipv6_chunked_422_os_lock_and_direct_route_gateway"
+      ],
+      "result": "PASS",
+      "residual_risk": "Grant UI revocation flow still relies on live desktop runtime integration in Stage G2 (B08).",
+      "rollback": "Revert modified hunks in policy.py, approval_service.py, app.py, and brokerClient.ts."
+    },
+    {
+      "evidence_id": "EV-G1-B03",
+      "backlog_id": "B03",
+      "mapped_ids": ["IR-01", "IR-02", "DEF-03", "DEF-13", "DEF-14", "DEF-24", "FR-SYS-03", "FR-ADM-05", "DEC-019"],
+      "changed_files": [
+        "core/jarvis/application/storage_service.py",
+        "core/jarvis/application/backup_service.py",
+        "core/jarvis/application/turn_orchestrator.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/security/test_g1_safety_kernel.py::test_ir01_cache_repoint_and_cleanup_cannot_delete_user_files_or_junction_targets",
+        "tests/security/test_g1_safety_kernel.py::test_ir02_backup_no_clobber_and_managed_root_containment",
+        "tests/security/test_g1_safety_kernel.py::test_ir09_ir12_no_fake_success_on_disabled_launch_file_move_or_production_notifications"
+      ],
+      "result": "PASS",
+      "residual_risk": "IR-06 portable recovery DEK wrapping inside encrypted backup archive & online-backup WAL migration remain scheduled for Stage G5 (B19).",
+      "rollback": "Revert modified hunks in storage_service.py, backup_service.py, turn_orchestrator.py, and app.py."
+    },
+    {
+      "evidence_id": "EV-G1-B04",
+      "backlog_id": "B04",
+      "mapped_ids": ["IR-03", "IR-12", "DEF-02", "DEF-09", "FR-ADM-02", "FR-AUT-02"],
+      "changed_files": [
+        "core/jarvis/application/approval_service.py",
+        "core/jarvis/application/workflow_service.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/security/test_g1_safety_kernel.py::test_ir03_ir12_workflow_blocks_self_echo_replay_and_fake_step_execution",
+        "tests/integration/test_phase4_r2_end_to_end.py::test_workflows_private_lan_extensions_and_phase4_fastapi_routes"
+      ],
+      "result": "PASS",
+      "residual_risk": "Real non-mock workflow step execution and voice-to-GUI approval SSE handoff are scheduled for Stage G2/G4 (B08, B14, B15).",
+      "rollback": "Revert modified hunks in approval_service.py, workflow_service.py, and app.py."
+    },
+    {
+      "evidence_id": "EV-G1-B05",
+      "backlog_id": "B05",
+      "mapped_ids": ["IR-04", "IR-07", "IR-08", "DEF-04", "DEF-21", "DEF-22", "DEF-23", "DEF-24", "DEF-26", "FR-WEB-02", "FR-ADM-03", "FR-ADM-04"],
+      "changed_files": [
+        "core/jarvis/infrastructure/web_fetch.py",
+        "core/jarvis/infrastructure/logging_setup.py",
+        "core/jarvis/infrastructure/crypto.py",
+        "core/jarvis/platform/windows/session_lock.py",
+        "core/jarvis/transport/app.py",
+        "apps/desktop/src-tauri/src/commands.rs"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/security/test_g1_safety_kernel.py::test_ir04_web_fetch_pinned_socket_builder_and_streaming_byte_cap",
+        "tests/security/test_g1_safety_kernel.py::test_ir07_ir08_transport_host_ipv6_chunked_422_os_lock_and_direct_route_gateway",
+        "tests/security/test_g1_safety_kernel.py::test_def23_def24_log_traceback_redaction_and_argon2_header_bounds",
+        "apps/desktop/src-tauri/src/commands.rs::tests::rejects_path_traversal_and_url_injection"
+      ],
+      "result": "PASS",
+      "residual_risk": "Live Win+L OS desktop lock-screen verification requires interactive workstation test (not automated in unit harness); Rust 10s timeout & Named Pipe IPC migration are scheduled in G2 (B07) and pre-public release.",
+      "rollback": "Revert web_fetch.py, logging_setup.py, crypto.py, app.py, commands.rs, and remove session_lock.py."
+    },
+    {
+      "evidence_id": "EV-G1-B06",
+      "backlog_id": "B06",
+      "mapped_ids": ["IR-05", "IR-09", "IR-12", "DEF-05", "DEF-09", "FR-AIP-02", "FR-ADM-06", "DEC-021", "DEC-031"],
+      "changed_files": [
+        "core/jarvis/infrastructure/provenance.py",
+        "core/jarvis/infrastructure/providers/local_runtime_manager.py",
+        "core/jarvis/infrastructure/live_voice_engine.py",
+        "core/jarvis/platform/windows/desktop_automation.py",
+        "core/jarvis/platform/portable_mock.py",
+        "core/jarvis/transport/app.py"
+      ],
+      "verification_level": "VERIFIED_INTEGRATION",
+      "test_ids": [
+        "tests/security/test_g1_safety_kernel.py::test_ir05_provenance_verifier_blocks_unverified_or_tampered_runtime_and_model",
+        "tests/security/test_g1_safety_kernel.py::test_ir09_ir12_no_fake_success_on_disabled_launch_file_move_or_production_notifications"
+      ],
+      "result": "PASS",
+      "residual_risk": "Live workstation booting with local llama-server/GGUF/Whisper/Piper models now requires generating data_dir/trusted_artifacts.json (manifest tooling/UI enrollment scheduled in G2/G5 B18/B20).",
+      "rollback": "Remove provenance.py and revert local_runtime_manager.py, live_voice_engine.py, desktop_automation.py, portable_mock.py, and app.py."
+    }
+  ],
+  "untested_surfaces": [
+    "Live installed Windows desktop GUI + WebView2 runtime E2E (VERIFIED_INSTALLED_E2E not yet executed)",
+    "Live Windows Win+L physical lock-screen transition against OpenInputDesktop",
+    "Live public TLS socket handshake with DNS-pinned sni_hostname against external internet host (offline-first policy)",
+    "Cross-machine encrypted backup restore with wrapped DEK (IR-06 -> Stage G5 B19)"
+  ]
+}

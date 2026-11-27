@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -28,7 +29,12 @@ from jarvis.domain.models import (
 from jarvis.domain.ports import ClockPort
 from jarvis.infrastructure.dual_db import DualSqliteManager
 
-CONTRACTS_DIR = Path(__file__).resolve().parents[3] / "contracts"
+_DEFAULT_CONTRACTS_DIR = Path(__file__).resolve().parents[3] / "contracts"
+CONTRACTS_DIR = (
+    Path(os.environ["JARVIS_CONTRACTS_DIR"])
+    if os.environ.get("JARVIS_CONTRACTS_DIR", "").strip()
+    else _DEFAULT_CONTRACTS_DIR
+)
 SECRET_PATTERN_RE = re.compile(
     r"(?:Bearer\s+[A-Za-z0-9._\-~+/]{12,}|sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|"
     r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,})"

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { BookOpen, CalendarCheck2, GitBranch, Search, ShieldCheck, Wallet } from 'lucide-react'
 import type {
   CurrencyExpenseSummary,
+  KnowledgeQueryResponse,
   KnowledgeRootItem,
   TaskItem,
   WorkflowItem,
@@ -11,10 +12,12 @@ export function KnowledgePanel({
   roots,
   onAddRoot,
   onRevokeRoot,
+  onSearchKnowledge,
 }: {
   readonly roots: ReadonlyArray<KnowledgeRootItem>
   readonly onAddRoot: (path: string) => void
   readonly onRevokeRoot: (id: string) => void
+  readonly onSearchKnowledge?: (query: string) => Promise<KnowledgeQueryResponse | null>
 }) {
   const [rootInput, setRootInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
@@ -29,11 +32,33 @@ export function KnowledgePanel({
 
   const handleSearch = (ev: React.FormEvent) => {
     ev.preventDefault()
-    if (!searchQuery.trim()) return
+    const trimmed = searchQuery.trim()
+    if (!trimmed) return
+    if (roots.filter((r) => r.enabled).length === 0) {
+      setQueryNotice(
+        'Bukti tidak mencukupi: belum ada folder pengetahuan opt-in yang aktif (tools=[]).',
+      )
+      return
+    }
+    if (onSearchKnowledge) {
+      setQueryNotice(`Mencari sitasi lokal pada Core untuk "${trimmed}"...`)
+      void onSearchKnowledge(trimmed)
+        .then((res) => {
+          if (!res) {
+            setQueryNotice('Gagal memuat hasil pencarian dari Core lokal.')
+            return
+          }
+          setQueryNotice(
+            `${res.answer} (${res.citations.length} sitasi terverifikasi, tools=[]).`,
+          )
+        })
+        .catch(() => {
+          setQueryNotice('Pencarian Knowledge Base lokal gagal terhubung ke Core.')
+        })
+      return
+    }
     setQueryNotice(
-      roots.filter((r) => r.enabled).length === 0
-        ? 'Bukti tidak mencukupi: belum ada folder pengetahuan opt-in yang aktif (tools=[]).'
-        : `Pencarian Hybrid RRF (BM25 FTS5 + Vektor Generasi Aktif, tools=[]): "${searchQuery.trim()}" — hasil hanya diambil dari root terizinkan.`,
+      `Pencarian Hybrid RRF (BM25 FTS5 + Vektor Generasi Aktif, tools=[]): "${trimmed}" — hasil hanya diambil dari root terizinkan.`,
     )
   }
 
@@ -337,6 +362,17 @@ export function WorkflowsPanel({
               Setiap workflow divalidasi Policy Engine (R3 ditolak), menyediakan pratinjau dry-run dengan bound_hash, dan merekonsiliasi status unknown tanpa blind retry (FR-AUT-01..03).
             </p>
           </div>
+        </div>
+
+        <div
+          className="mt-3 rounded-lg border px-3 py-2 text-xs"
+          style={{
+            backgroundColor: 'var(--status-ok-dim, rgba(34, 197, 94, 0.12))',
+            borderColor: 'var(--status-ok)',
+            color: 'var(--status-ok)',
+          }}
+        >
+          Status Eksekusi (Stage G4): Eksekusi workflow deklaratif nyata aktif melalui Policy Engine; setiap langkah R2 wajib melalui persetujuan GUI tunggal tanpa simulasi palsu.
         </div>
 
         <form

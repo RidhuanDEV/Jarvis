@@ -430,6 +430,34 @@ class AiRegistryService:
             )
         return results
 
+    def upsert_profile(self, profile: AiProfileRecord) -> AiProfileRecord:
+        """Insert or update an AI profile revision so managed local runtimes can bind active models."""
+        with self._db.core_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO ai_profile(
+                    id, revision, mode, role_bindings_json, runtime_knobs_json,
+                    resource_limits_json, fallback_allowlist_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id, revision) DO UPDATE SET
+                    mode = excluded.mode,
+                    role_bindings_json = excluded.role_bindings_json,
+                    runtime_knobs_json = excluded.runtime_knobs_json,
+                    resource_limits_json = excluded.resource_limits_json,
+                    fallback_allowlist_json = excluded.fallback_allowlist_json
+                """,
+                (
+                    profile.id,
+                    profile.revision,
+                    profile.mode.value,
+                    json.dumps(profile.role_bindings, sort_keys=True),
+                    json.dumps(profile.runtime_knobs, sort_keys=True),
+                    json.dumps(profile.resource_limits, sort_keys=True),
+                    json.dumps(list(profile.fallback_allowlist)),
+                ),
+            )
+        return profile
+
     def list_profiles(self) -> list[AiProfileRecord]:
         with self._db.core_read() as conn:
             rows = conn.execute("SELECT * FROM ai_profile ORDER BY id ASC, revision DESC").fetchall()
@@ -485,21 +513,28 @@ class AiRegistryService:
         self,
         target_profile_id: str,
         *,
-        target_revision: int = 1,
+        target_revision: int | None = None,
         probe_candidate: Callable[[AiProfileRecord], tuple[bool, str]] | None = None,
         correlation_id: str,
         actor: str = "local_owner",
     ) -> ProfileSwitchOutcome:
-        """Atomic profile switch with probe & automatic rollback to prior healthy profile (BR-AI-03)."""
+        """Atomic profile switch with probe & automatic rollback to prior healthy profile (BR-AI-03, B20)."""
         current = self.get_active_profile()
         with self._db.core_read() as conn:
-            cand_row = conn.execute(
-                "SELECT * FROM ai_profile WHERE id = ? AND revision = ?",
-                (target_profile_id, target_revision),
-            ).fetchone()
+            if target_revision is None:
+                cand_row = conn.execute(
+                    "SELECT * FROM ai_profile WHERE id = ? ORDER BY revision DESC LIMIT 1",
+                    (target_profile_id,),
+                ).fetchone()
+            else:
+                cand_row = conn.execute(
+                    "SELECT * FROM ai_profile WHERE id = ? AND revision = ?",
+                    (target_profile_id, target_revision),
+                ).fetchone()
         if cand_row is None:
             raise AiRegistryError(
-                ErrorCode.NOT_FOUND, f"Profile '{target_profile_id}' rev {target_revision} not found."
+                ErrorCode.NOT_FOUND,
+                f"Profile '{target_profile_id}' rev {target_revision if target_revision is not None else 'latest'} not found.",
             )
 
         candidate = AiProfileRecord(

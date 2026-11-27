@@ -19,6 +19,14 @@ ARGON2_TIME_COST = 3
 ARGON2_MEMORY_COST_KIB = 65536
 ARGON2_PARALLELISM = 2
 
+# DEF-24 / B05: strict KDF bounds against untrusted backup-header OOM / CPU DoS
+ARGON2_MIN_TIME_COST = 1
+ARGON2_MAX_TIME_COST = 10
+ARGON2_MIN_MEMORY_COST_KIB = 8192       # 8 MiB floor
+ARGON2_MAX_MEMORY_COST_KIB = 524288     # 512 MiB ceiling
+ARGON2_MIN_PARALLELISM = 1
+ARGON2_MAX_PARALLELISM = 8
+
 FIELD_PREFIX = "v1:"
 BACKUP_FORMAT_VERSION = 1
 
@@ -126,10 +134,21 @@ def decrypt_portable_backup(archive_bytes: bytes, passphrase: str) -> bytes:
             raise CryptoIntegrityError("Unsupported backup format version or KDF.")
         salt = base64.b64decode(str(header["salt"]), validate=True)
         nonce = base64.b64decode(str(header["nonce"]), validate=True)
+        if len(salt) != ARGON2_SALT_LEN or len(nonce) != GCM_NONCE_LEN:
+            raise CryptoIntegrityError("Invalid backup salt or nonce length.")
+        t_cost = int(header["t"])
+        m_cost = int(header["m"])
+        p_cost = int(header["p"])
+        if not (ARGON2_MIN_TIME_COST <= t_cost <= ARGON2_MAX_TIME_COST):
+            raise CryptoIntegrityError("Backup KDF time_cost outside safe bounds.")
+        if not (ARGON2_MIN_MEMORY_COST_KIB <= m_cost <= ARGON2_MAX_MEMORY_COST_KIB):
+            raise CryptoIntegrityError("Backup KDF memory_cost_kib outside safe bounds.")
+        if not (ARGON2_MIN_PARALLELISM <= p_cost <= ARGON2_MAX_PARALLELISM):
+            raise CryptoIntegrityError("Backup KDF parallelism outside safe bounds.")
         params = Argon2Params(
-            time_cost=int(header["t"]),
-            memory_cost_kib=int(header["m"]),
-            parallelism=int(header["p"]),
+            time_cost=t_cost,
+            memory_cost_kib=m_cost,
+            parallelism=p_cost,
         )
     except CryptoIntegrityError:
         raise
@@ -143,3 +162,74 @@ def decrypt_portable_backup(archive_bytes: bytes, passphrase: str) -> bytes:
         raise CryptoIntegrityError(
             "Backup authentication failed (incorrect recovery passphrase or tampered archive)."
         ) from exc
+
+
+# --- Stage G7 (B26): Argon2id Pairing Code Hashing for Remote Mobile Gateway ---
+
+PAIRING_ARGON2_TIME_COST = 2
+PAIRING_ARGON2_MEMORY_COST_KIB = 16384  # 16 MiB — memory-hard protection for 6-digit pairing codes
+PAIRING_ARGON2_PARALLELISM = 1
+PAIRING_ARGON2_PREFIX = "argon2id$"
+
+
+def hash_pairing_code_argon2id(pairing_code: str) -> str:
+    """Hash a short-lived local pairing code with salted Argon2id (never bare fast SHA-256)."""
+    clean = pairing_code.strip()
+    if not clean:
+        raise ValueError("Pairing code cannot be empty.")
+    salt = os.urandom(ARGON2_SALT_LEN)
+    digest = hash_secret_raw(
+        secret=clean.encode("utf-8"),
+        salt=salt,
+        time_cost=PAIRING_ARGON2_TIME_COST,
+        memory_cost=PAIRING_ARGON2_MEMORY_COST_KIB,
+        parallelism=PAIRING_ARGON2_PARALLELISM,
+        hash_len=AES_KEY_LEN,
+        type=Argon2Type.ID,
+    )
+    salt_b64 = base64.b64encode(salt).decode("ascii")
+    hash_b64 = base64.b64encode(digest).decode("ascii")
+    return (
+        f"{PAIRING_ARGON2_PREFIX}t={PAIRING_ARGON2_TIME_COST}"
+        f"$m={PAIRING_ARGON2_MEMORY_COST_KIB}$p={PAIRING_ARGON2_PARALLELISM}"
+        f"${salt_b64}${hash_b64}"
+    )
+
+
+def verify_pairing_code_argon2id(stored_hash: str, candidate_code: str) -> bool:
+    """Constant-time verification of a salted Argon2id pairing code hash with bounded KDF params."""
+    import hmac
+
+    if not stored_hash.startswith(PAIRING_ARGON2_PREFIX):
+        return False
+    parts = stored_hash.split("$")
+    if len(parts) != 6:
+        return False
+    try:
+        t_cost = int(parts[1].removeprefix("t="))
+        m_cost = int(parts[2].removeprefix("m="))
+        p_cost = int(parts[3].removeprefix("p="))
+        if not (ARGON2_MIN_TIME_COST <= t_cost <= ARGON2_MAX_TIME_COST):
+            return False
+        if not (ARGON2_MIN_MEMORY_COST_KIB <= m_cost <= ARGON2_MAX_MEMORY_COST_KIB):
+            return False
+        if not (ARGON2_MIN_PARALLELISM <= p_cost <= ARGON2_MAX_PARALLELISM):
+            return False
+        salt = base64.b64decode(parts[4], validate=True)
+        expected = base64.b64decode(parts[5], validate=True)
+        if len(salt) != ARGON2_SALT_LEN or len(expected) != AES_KEY_LEN:
+            return False
+    except Exception:
+        return False
+
+    actual = hash_secret_raw(
+        secret=candidate_code.strip().encode("utf-8"),
+        salt=salt,
+        time_cost=t_cost,
+        memory_cost=m_cost,
+        parallelism=p_cost,
+        hash_len=AES_KEY_LEN,
+        type=Argon2Type.ID,
+    )
+    return hmac.compare_digest(expected, actual)
+
